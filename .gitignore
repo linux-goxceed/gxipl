@@ -1,0 +1,6 @@
+gx6702-ipl.*
+gx6702-bootcode.*
+BOOT*.bin
+*.o
+*.boot
+TABLE*.bin
