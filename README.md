@@ -69,10 +69,28 @@ python3 gxupload_smoke.py \
   -d /dev/ttyUSB0
 ```
 
+Single-file UART loader (open IPL + U-Boot):
+
+```sh
+python3 ../u-boot/board/nationalchip/gx6702/mkgxboot.py \
+  gx6702-ipl.boot ../u-boot/u-boot.bin ../u-boot/u-boot-gx6702.boot
+python3 ../libre-gxdl/libre_gxdl.py \
+  -b ../u-boot/u-boot-gx6702.boot -d /dev/ttyUSB0
+
+# Or use the bring-up uploader without a separate --uboot argument:
+python3 ../gxtest/tools/flash/gxupload_smoke.py \
+  -b ../u-boot/u-boot-gx6702.boot --full -d /dev/ttyUSB0
+```
+
+The combined image uses a checksummed `GXUB` record understood by the open
+IPL. It contains no vendor stage-1 or stage-2 code. Raw `--uboot` uploads
+remain supported.
+
 You can get `gxupload_smoke.py` from [gxutils](https://github.com/linux-goxceed/gxutils).
 
 Early breadcrumbs remain `I` / `R` / `U` / `N` (suppressed when verbose). Use
-`--full` so the uploader answers the post-`IRUN` `GET`.
+`--full` so the uploader answers the final `RUNGET` marker (`GET`-only matching
+remains compatible).
 
 ## IPL config (512 bytes)
 

@@ -452,14 +452,6 @@ int ipl_pre_mmu(void)
 	return 0;
 }
 
-static u16 read_u16(u32 uart)
-{
-	u16 value = uart_getc_at(uart);
-
-	value |= (u16)uart_getc_at(uart) << 8;
-	return value;
-}
-
 static u32 read_u32(u32 uart)
 {
 	u32 value = 0;
@@ -488,22 +480,20 @@ static void copy_mem(u8 *dst, const u8 *src, u32 n)
 static int uart_recv_image(u8 *destination, u32 max_size, u32 *out_size)
 {
 	u32 expected;
-	u32 type;
 	u32 size;
 	u32 checksum;
 	u32 i;
 
 	uart_flush_rx(UART_VIRT);
-	uart_puts_at(UART_VIRT, "GET");
+	/* Vendor-compatible ready marker; newer/raw uploaders also match GET. */
+	uart_puts_at(UART_VIRT, "RUNGET");
 	/*
-	 * Host starts transmitting as soon as it sees GET.  Do not flush after
-	 * GET or we can drop the meta header.  Only the pre-GET flush above is
-	 * safe.
+	 * Host starts transmitting as soon as it sees RUNGET.  Do not flush after
+	 * the marker or we can drop the meta header.  Only the flush above is safe.
 	 */
-	expected = read_u16(UART_VIRT);
-	type = read_u16(UART_VIRT);
+	expected = read_u32(UART_VIRT);
 	size = read_u32(UART_VIRT);
-	if (type != 0x00c2u || !size || size > max_size) {
+	if (!size || size > max_size) {
 		uart_puts_at(UART_VIRT, "\r\nEMETA\r\n");
 		return -1;
 	}
@@ -513,9 +503,15 @@ static int uart_recv_image(u8 *destination, u32 max_size, u32 *out_size)
 		u8 byte = uart_getc_at(UART_VIRT);
 
 		destination[i] = byte;
-		checksum = (checksum + byte) & 0xffffu;
+		checksum += byte;
 	}
-	if (checksum != expected) {
+	/*
+	 * Normal GX uploaders send the full 32-bit additive checksum.  Keep the
+	 * bring-up uploader's historical <sum16, 0x00c2> metadata compatible too.
+	 */
+	if (checksum != expected &&
+	    !((expected >> 16) == 0x00c2u &&
+	      (checksum & 0xffffu) == (expected & 0xffffu))) {
 		uart_puts_at(UART_VIRT, "\r\nECHK\r\n");
 		return -1;
 	}
@@ -561,8 +557,43 @@ static int try_spi_bootcode(const struct ipl_config *cfg)
 static void run_uart_payload(u8 *buf, u32 size)
 {
 	const struct bootcode_hdr *hdr = (const struct bootcode_hdr *)buf;
+	const struct uboot_bundle_hdr *bundle;
+	const u8 *payload;
 	u32 i;
 	u32 sum;
+
+	/*
+	 * A normal GX uploader sends a .boot file as:
+	 *
+	 *   "toob" + IPL body[0:0x2000] + GXUB header + raw U-Boot
+	 *
+	 * Unwrap that single-file form before checking the older GXBC/raw forms.
+	 */
+	if (size >= 4u + 0x2000u + sizeof(*bundle) &&
+	    buf[0] == 't' && buf[1] == 'o' &&
+	    buf[2] == 'o' && buf[3] == 'b') {
+		bundle = (const struct uboot_bundle_hdr *)(buf + 4u + 0x2000u);
+		payload = (const u8 *)(bundle + 1);
+		if (bundle->magic != UBOOT_BUNDLE_MAGIC ||
+		    !bundle->size || bundle->size > UBOOT_MAX_SIZE ||
+		    bundle->entry != UBOOT_ENTRY ||
+		    bundle->size > size - (4u + 0x2000u + sizeof(*bundle))) {
+			uart_puts_at(UART_VIRT, "\r\nEBUNDLE\r\n");
+			for (;;)
+				;
+		}
+		sum = 0;
+		for (i = 0; i < bundle->size; i++)
+			sum += payload[i];
+		if (sum != bundle->checksum) {
+			uart_puts_at(UART_VIRT, "\r\nEBUNDLECHK\r\n");
+			for (;;)
+				;
+		}
+		copy_mem((u8 *)UBOOT_ENTRY, payload, bundle->size);
+		/* The downward copy overwrites the bundle header itself. */
+		jump_to(UBOOT_ENTRY);
+	}
 
 	if (size >= sizeof(*hdr) && hdr->magic == BOOTCODE_MAGIC) {
 		if (hdr->size + sizeof(*hdr) > size ||
