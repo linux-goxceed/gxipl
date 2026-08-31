@@ -13,15 +13,15 @@ BOOTCODE_MAGIC = 0x43425847
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--ipl-boot", type=Path, required=True,
-                    help="gx6702-ipl.boot (toob container) or raw IPL body")
+                    help="GX6702/GX6706 toob container or raw 8 KiB IPL body")
     ap.add_argument("--bootcode", type=Path, required=True,
-                    help="raw gx6702-bootcode.bin")
+                    help="raw SoC-specific bootcode binary")
     ap.add_argument("--uboot", type=Path, help="optional raw u-boot.bin")
     ap.add_argument("--bootcode-off", type=lambda x: int(x, 0), default=0x4000)
     ap.add_argument("--uboot-off", type=lambda x: int(x, 0), default=0x10000)
     ap.add_argument("-o", "--output", type=Path, required=True)
     ap.add_argument("--size", type=lambda x: int(x, 0), default=64 * 1024,
-                    help="output BOOT image size (default 64K)")
+                    help="output BOOT image size (GX6702 64K, GX6706 128K)")
     args = ap.parse_args()
 
     ipl = args.ipl_boot.read_bytes()
@@ -33,6 +33,10 @@ def main() -> int:
     bootcode = args.bootcode.read_bytes()
     out = bytearray(args.size)
     out[0:4] = bytes.fromhex("aa55aa55")
+    if len(ipl_body) != 0x2000:
+        raise SystemExit("IPL body must be exactly 8 KiB")
+    if 4 + len(ipl_body) > len(out):
+        raise SystemExit("IPL does not fit in output image")
     out[4:4 + len(ipl_body)] = ipl_body
 
     hdr = struct.pack("<IIII", BOOTCODE_MAGIC, len(bootcode), 0x93c00000,

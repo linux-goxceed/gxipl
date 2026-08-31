@@ -34,8 +34,8 @@ extern int g_verbose;
 #define EF_CSKY_ABIV2	0x20000000u
 
 /* Post-MMU cached DDR VA (start.S); matches 64 MiB Gemini DRAM. */
-#define ELF_DDR_BASE	STAGE_BUF
-#define ELF_DDR_SIZE	(64u * 1024u * 1024u)
+#define ELF_DDR_BASE	DDR_VIRT_BASE
+#define ELF_DDR_SIZE	DDR_SIZE
 #define ELF_DDR_END	(ELF_DDR_BASE + ELF_DDR_SIZE)
 
 struct elf32_hdr {

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT */
 /*
- * GX6702 open IPL entry, C-SKY CK610 ABIv1, little endian.
+ * Shared GX6702/GX6706 open IPL entry, C-SKY CK610 ABIv1, little endian.
  *
  * The BootROM enters at 0x00100000.  A relative branch in the first vector
  * slot transfers to the implementation at 0x00100040; exception slots point
@@ -129,6 +129,7 @@ _start:
 	bseti r4, r4, 7
 	bclri r4, r4, 18
 	mtcr  r4, cr18
+
 	lrw   r1, 0x93ce6400
 	mov   r0, r1
 	jsri  ipl_post_mmu

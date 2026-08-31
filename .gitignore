@@ -1,6 +1,11 @@
 gx6702-ipl.*
 gx6702-bootcode.*
+gx6706-ipl.*
+gx6706-bootcode.*
+build/
+*-regdump.txt
 BOOT*.bin
 *.o
 *.boot
 TABLE*.bin
+__pycache__/

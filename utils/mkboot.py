@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Wrap the open IPL in the GX6702 BootROM/GxLoader UART container."""
+"""Wrap an open IPL in a GX6702/GX6706 BootROM UART container."""
 
 from __future__ import annotations
 
@@ -13,6 +13,22 @@ CODE_END = 0x1E00		# last 512 bytes reserved for IPL config
 TRAILER_OFF = 0x1FF8		# BootROM CRC / legacy trailer word
 LEGACY_TRAILER = bytes.fromhex("33dea189")
 CONFIG_SIZE = 512
+
+SOCS = {
+    "gx6702": {"chip_id": 0x6701, "crc_trailer": False},
+    "gx6706": {"chip_id": 0x6705, "crc_trailer": True},
+}
+
+
+def bootrom_stage1_crc(data: bytes) -> int:
+    """MSB-first GX BootROM CRC-32, poly 0x04C11DB7, no final XOR."""
+    crc = 0xFFFFFFFF
+    for byte in data:
+        crc ^= byte << 24
+        for _ in range(8):
+            crc = (((crc << 1) ^ 0x04C11DB7) if crc & 0x80000000
+                   else (crc << 1)) & 0xFFFFFFFF
+    return crc
 
 
 def _cfg_crc(cfg: bytes) -> int:
@@ -38,6 +54,7 @@ def default_config_blob() -> bytes:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--soc", choices=sorted(SOCS), default="gx6702")
     parser.add_argument("input")
     parser.add_argument("output")
     parser.add_argument("--config", type=Path,
@@ -51,7 +68,8 @@ def main() -> int:
 
     header = bytearray(HEADER_SIZE)
     header[0:4] = b"toob"
-    struct.pack_into("<HHI", header, 4, 0x0100, 0x6701, 115200)
+    soc = SOCS[args.soc]
+    struct.pack_into("<HHI", header, 4, 0x0100, soc["chip_id"], 115200)
 
     body = bytearray(BODY_SIZE)
     body[:len(payload)] = payload
@@ -67,12 +85,16 @@ def main() -> int:
     # historical offset inside that region (0x1FF8).
     cfg_off = BODY_SIZE - CONFIG_SIZE
     body[cfg_off:cfg_off + CONFIG_SIZE] = cfg
-    body[TRAILER_OFF:TRAILER_OFF + 4] = LEGACY_TRAILER
     struct.pack_into("<H", body, cfg_off + 6,
                      _cfg_crc(body[cfg_off:cfg_off + CONFIG_SIZE]))
+    if soc["crc_trailer"]:
+        struct.pack_into("<I", body, TRAILER_OFF,
+                         bootrom_stage1_crc(bytes(body[:TRAILER_OFF])))
+    else:
+        body[TRAILER_OFF:TRAILER_OFF + 4] = LEGACY_TRAILER
 
     Path(args.output).write_bytes(header + body)
-    print(f"wrote {args.output}: IPL {len(payload)} bytes, body 0x{BODY_SIZE:x}, "
+    print(f"wrote {args.output}: {args.soc} IPL {len(payload)} bytes, body 0x{BODY_SIZE:x}, "
           f"config @{cfg_off:#x}, container {HEADER_SIZE + BODY_SIZE} bytes")
     return 0
 

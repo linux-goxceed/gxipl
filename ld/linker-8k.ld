@@ -28,7 +28,7 @@ SECTIONS
 
 	__image_end = LOADADDR(.data) + SIZEOF(.data);
 	ASSERT(__image_end <= 0x00101e00,
-	       "GX6702 IPL exceeds 8KiB code window before 512-byte config")
+	       "IPL exceeds 8KiB code window before 512-byte config")
 
 	/DISCARD/ : {
 		*(.comment .note* .eh_frame .csky_attributes)

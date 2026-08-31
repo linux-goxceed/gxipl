@@ -20,6 +20,7 @@ Outputs BOOT + TABLE images ready for serialdown.
 from __future__ import annotations
 
 import argparse
+import os
 import struct
 import subprocess
 import sys
@@ -35,7 +36,7 @@ BOOT_CRC_OFF = 0x19D
 TABLE_CRC_OFF = 0x1FC
 ERASE_SIZE = 64 * 1024
 DEFAULT_UBOOT_OFF = 0x10000
-DEFAULT_TABLE = Path("/home/ximitekfun/Downloads/gx-re/extracted_partitions/TABLE.bin")
+DEFAULT_TABLE = REPO.parent / "extracted_partitions" / "TABLE.bin"
 DEFAULT_STOCK_BOOT = REPO / "BOOT.bin"
 DEFAULT_UBOOT = REPO / "u-boot" / "u-boot.bin"
 
@@ -195,7 +196,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
         "--cross-compile",
-        default="/opt/gxtools/csky-linux-tools-uclibc-linux-4.9.56-20260805/bin/csky-linux-",
+        default=os.environ.get("CROSS_COMPILE", "csky-linux-"),
     )
     ap.add_argument(
         "--full-bootcode",

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT */
 /*
- * Slim GX6702 USB pad/PHY + minimal EHCI host + BOT MSC READ for FatFs.
+ * Slim GX6702/GX6706 USB pad/PHY + EHCI host + BOT MSC READ for FatFs.
  */
 
 #include "gx_hw.h"
@@ -42,6 +42,106 @@ static void gx_clrset(u32 addr, u32 clear, u32 set)
 	writel(v, addr);
 }
 
+#if defined(SOC_GX6706)
+struct cygnus_route {
+	u8 index;
+	u8 gate;
+	u32 value;
+	u32 gate_mask;
+};
+
+struct cygnus_field {
+	u8 target;
+	u8 gate;
+	u32 clear;
+	u32 first;
+	u32 second;
+	u32 value;
+	u32 gate_mask;
+};
+
+static const struct cygnus_route cygnus_usb_routes[] = {
+	{ 1, 1, 0x05555555u, 0x00000001u },
+	{ 2, 1, 0x05555555u, 0x00000002u },
+	{ 3, 1, 0x15555555u, 0x00000200u },
+	{ 4, 1, 0x0cccccccu, 0x00000400u },
+	{ 5, 1, 0x0cccccccu, 0x00000800u },
+	{ 6, 1, 0x10000000u, 0x00001000u },
+	{ 7, 1, 0x0cccccccu, 0x00002000u },
+	{ 8, 1, 0x09245fd9u, 0x00004000u },
+	{ 9, 1, 0x05d1745du, 0x00008000u },
+	{ 12, 2, 0x0cccccccu, 0x00000200u },
+	{ 13, 2, 0x0aaaaaaau, 0x00080000u },
+	{ 14, 2, 0x08000000u, 0x00000008u },
+	{ 16, 2, 0x10000000u, 0x00000001u },
+	{ 17, 2, 0x0cccccccu, 0x00000800u },
+	{ 18, 2, 0x10000000u, 0x00000400u },
+};
+
+static const struct cygnus_field cygnus_usb_fields[] = {
+	{ 1, 2, 0xff800000u, 0x80000000u, 0x40000000u, 0x0a800000u, 0 },
+	{ 1, 1, 0x000ff000u, 0x00080000u, 0x00040000u, 0x0002b000u, BIT(4) },
+	{ 1, 1, 0x000000ffu, 0x00000080u, 0x00000040u, 0x00000007u, BIT(3) },
+	{ 2, 1, 0xff000000u, 0x80000000u, 0x40000000u, 0x0e000000u, BIT(19) },
+	{ 2, 1, 0x00ff0000u, 0x00800000u, 0x00400000u, 0x00050000u, BIT(21) },
+	{ 2, 1, 0x0000ff00u, 0x00008000u, 0x00004000u, 0x00000900u, BIT(22) },
+	{ 3, 1, 0xff000000u, 0x80000000u, 0x40000000u, 0x03000000u, BIT(27) },
+	{ 3, 2, 0x00ff0000u, 0x00800000u, 0x00400000u, 0x002b0000u, BIT(29) },
+	{ 3, 1, 0x00000078u, 0x00000040u, 0x00000040u, 0x00000038u, 0 },
+	{ 3, 1, 0x00000007u, 0, 0, 0x00000007u, 0 },
+};
+
+static u32 cygnus_target(u8 target)
+{
+	if (target == 1)
+		return 0xa030a024u;
+	if (target == 2)
+		return 0xa030a178u;
+	return 0xa030a17cu;
+}
+
+static u32 cygnus_gate(u8 gate)
+{
+	return gate == 2 ? 0xa030a174u : 0xa030a170u;
+}
+
+static void cygnus_usb_clocks(void)
+{
+	u32 i;
+
+	/* USB PLL: recovered packed 0x405f7e00 maps to 0x0011102d. */
+	writel(0x7811102du, 0xa030a0ccu);
+	delay_loops(1000);
+	writel(0x0011102du, 0xa030a0ccu);
+
+	for (i = 0; i < ARRAY_SIZE(cygnus_usb_routes); i++) {
+		const struct cygnus_route *r = &cygnus_usb_routes[i];
+		u32 addr = 0xa0600ffcu + (u32)r->index * 4u;
+
+		writel(r->value | BIT(30), addr);
+		writel(r->value | BIT(30) | BIT(31), addr);
+		gx_clrset(cygnus_gate(r->gate), 0, r->gate_mask);
+		if (r->index == 8)
+			gx_clrset(0xa030a174u, 0, BIT(6) | BIT(7));
+	}
+	for (i = 0; i < ARRAY_SIZE(cygnus_usb_fields); i++) {
+		const struct cygnus_field *f = &cygnus_usb_fields[i];
+		u32 addr = cygnus_target(f->target);
+		u32 value = readl(addr);
+
+		value = (value & ~f->clear) | f->value | f->second;
+		writel(value, addr);
+		writel(value | f->first, addr);
+		gx_clrset(cygnus_gate(f->gate), 0, f->gate_mask);
+	}
+	gx_clrset(0xa030a170u, 0,
+		  0x07000000u | BIT(30) | BIT(23) | 0x300001e0u | 0x00070000u);
+	gx_clrset(0xa030a174u, 0,
+		  BIT(1) | BIT(2) | BIT(14) | 0x1f800000u | BIT(4));
+}
+#endif
+
+#if !defined(SOC_GX6706)
 static void usb_program_phy(u32 base)
 {
 	writel(31, base + 0x0);
@@ -49,6 +149,7 @@ static void usb_program_phy(u32 base)
 	writel(0xac, base + 0x14);
 	writel(5, base + 0x18);
 }
+#endif
 
 static void usb_phy_bits_clear_en(void)
 {
@@ -76,6 +177,29 @@ static void usb_phy_bits_set_en(void)
 
 static int gx_usb_pad_phy(void)
 {
+#if defined(SOC_GX6706)
+	/*
+	 * Clean-room transcription of the Cygnus H5/S5 late USB setup.  The
+	 * Cygnus PHY trim ports are in the 0xa0702xxx pad block; GX6702 instead
+	 * exposes two PHY register banks at 0xa0908xxx.
+	 */
+	cygnus_usb_clocks();
+	gx_clrset(0xa030a1b0u, BIT(6) | BIT(7), BIT(8));
+	gx_clrset(0xa030a200u, 0, BIT(0) | BIT(1));
+	writel(5, 0xa0702018u);
+	writel(5, 0xa0702418u);
+	gx_clrset(USB_CFG_BASE + 0x0, 0, 0x820f2000u);
+	gx_clrset(USB_CFG_BASE + 0xc, 0, BIT(25));
+	usb_phy_bits_clear_en();
+	usb_phy_bits_set_mid();
+	usb_phy_bits_clear_mid();
+	usb_phy_bits_set_en();
+	usb_phy_bits_clear_en();
+	usb_phy_bits_set_mid();
+	usb_phy_bits_clear_mid();
+	delay_loops(200000);
+	return 0;
+#else
 	u32 v;
 
 	gx_clrset(0xa030a068u, (1u << 23), 0);
@@ -118,6 +242,7 @@ static int gx_usb_pad_phy(void)
 	gx_clrset(0xa030a20cu, 0, (1u << 0));
 	delay_loops(200000);
 	return 0;
+#endif
 }
 
 /* ---- Queue heads / qTDs in DDR (aligned) ---- */

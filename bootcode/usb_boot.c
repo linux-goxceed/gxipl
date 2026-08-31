@@ -122,7 +122,12 @@ int bc_usb_boot(void)
 		start_file[5] = '6';
 		start_file[6] = '7';
 		start_file[7] = '0';
-		start_file[8] = '2';
+		start_file[8] =
+#if defined(SOC_GX6706)
+			'6';
+#else
+			'2';
+#endif
 		start_file[9] = '.';
 		start_file[10] = 'e';
 		start_file[11] = 'l';

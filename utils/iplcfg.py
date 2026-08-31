@@ -10,6 +10,9 @@ from pathlib import Path
 
 CONFIG_SIZE = 512
 MAGIC = 0x47464331
+HEADER_SIZE = 0x20
+TRAILER_OFF = 0x1FF8
+LEGACY_TRAILER = bytes.fromhex("33dea189")
 
 FLAG_NAMES = {
     0: "verbose",
@@ -31,6 +34,17 @@ def crc16(data: bytes) -> int:
             continue
         total += b
     return total & 0xFFFF
+
+
+def bootrom_stage1_crc(data: bytes) -> int:
+    """GX6706 MSB-first BootROM CRC-32, without a final XOR."""
+    crc = 0xFFFFFFFF
+    for byte in data:
+        crc ^= byte << 24
+        for _ in range(8):
+            crc = (((crc << 1) ^ 0x04C11DB7) if crc & 0x80000000
+                   else (crc << 1)) & 0xFFFFFFFF
+    return crc
 
 
 def load_config(raw: bytes) -> dict:
@@ -70,14 +84,13 @@ def config_offset(image: bytes, size: str = "8k") -> int:
     raise SystemExit(f"unrecognized image length {len(image)}")
 
 
-HEADER_SIZE = 0x20
-
-
 def main() -> int:
     ap = argparse.ArgumentParser(description="IPL config patcher")
     ap.add_argument("image", type=Path)
     ap.add_argument("--size", choices=("8k",), default="8k",
                     help="stage-1 body size (BootROM is fixed at 8 KiB)")
+    ap.add_argument("--soc", choices=("auto", "gx6702", "gx6706"), default="auto",
+                    help="container SoC (default: infer from header/trailer)")
     ap.add_argument("--show", action="store_true")
     ap.add_argument("--verbose", type=int, choices=(0, 1))
     ap.add_argument("--skip-usb", type=int, choices=(0, 1))
@@ -91,6 +104,18 @@ def main() -> int:
 
     data = bytearray(args.image.read_bytes())
     off = config_offset(bytes(data), args.size)
+    body_base = HEADER_SIZE if data[:4] == b"toob" else 0
+    trailer = body_base + TRAILER_OFF
+    if args.soc == "auto":
+        if body_base:
+            chip_id = struct.unpack_from("<H", data, 6)[0]
+            soc = "gx6706" if chip_id == 0x6705 else "gx6702"
+        else:
+            stored = struct.unpack_from("<I", data, trailer)[0]
+            calculated = bootrom_stage1_crc(bytes(data[:TRAILER_OFF]))
+            soc = "gx6706" if stored == calculated else "gx6702"
+    else:
+        soc = args.soc
     cfg = load_config(bytes(data[off:off + CONFIG_SIZE]))
 
     if args.show or all(v is None for v in (
@@ -125,17 +150,20 @@ def main() -> int:
     new = build_config(flags, timeout, cfg["bootcode_flash_off"],
                        cfg["uboot_flash_off"], cfg["uboot_flash_max"])
     data[off:off + CONFIG_SIZE] = new
-    # Preserve / restore legacy trailer inside the config window.
-    # Trailer bytes are excluded from the IPL-config CRC (BootROM owns them).
-    body_base = HEADER_SIZE if data[:4] == b"toob" else 0
-    t_abs = body_base + 0x1FF8
-    if t_abs + 4 <= len(data) and off <= t_abs < off + CONFIG_SIZE:
-        data[t_abs:t_abs + 4] = bytes.fromhex("33dea189")
+    # The trailer bytes are excluded from the IPL-config checksum. GX6702
+    # owns a legacy constant there; GX6706 requires a CRC over body[0:0x1ff8].
+    if trailer + 4 <= len(data) and off <= trailer < off + CONFIG_SIZE:
+        if soc == "gx6706":
+            stage1 = data[body_base:body_base + TRAILER_OFF]
+            struct.pack_into("<I", data, trailer,
+                             bootrom_stage1_crc(bytes(stage1)))
+        else:
+            data[trailer:trailer + 4] = LEGACY_TRAILER
         struct.pack_into("<H", data, off + 6, crc16(data[off + 8:off + CONFIG_SIZE]))
 
     out = args.output or args.image
     out.write_bytes(data)
-    print(f"wrote config to {out} @{off:#x} flags={flags:#x}")
+    print(f"wrote config to {out} @{off:#x} soc={soc} flags={flags:#x}")
     return 0
 
 

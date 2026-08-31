@@ -14,6 +14,69 @@
 extern struct ipl_config g_ipl_cfg;
 extern int g_verbose;
 
+#if defined(SOC_GX6706)
+static void gx6706_spi_dump_abs(const char *name, u32 address)
+{
+	bc_puts("SPIABS name=");
+	bc_puts(name);
+	bc_puts(" address=");
+	bc_put_hex(address);
+	bc_puts(" value=");
+	bc_put_hex(readl(address));
+	bc_puts("\r\n");
+}
+
+static void gx6706_spi_dump_regs(void)
+{
+	u32 i;
+
+	bc_puts("SPI SOURCE open post-jedec\r\n");
+	bc_puts("SPI REGDUMP BEGIN\r\n");
+	gx6706_spi_dump_abs("route", SPI_ROUTE_REG_VIRT);
+	gx6706_spi_dump_abs("pad-byte", 0xa030a794u);
+	gx6706_spi_dump_abs("gate", DWSPI_GATE_VIRT);
+	gx6706_spi_dump_abs("cs-legacy", DWSPI_CS_LEGACY_VIRT);
+	gx6706_spi_dump_abs("wrap-ctrl", DWSPI_WRAP_VIRT + DWSPI_WRAP_CTRL);
+	gx6706_spi_dump_abs("wrap-pad", DWSPI_WRAP_VIRT + DWSPI_WRAP_PAD);
+	gx6706_spi_dump_abs("wrap-pad-hi", DWSPI_WRAP_VIRT + DWSPI_WRAP_PAD + 4u);
+	gx6706_spi_dump_abs("io-9000", 0xa4809000u);
+	gx6706_spi_dump_abs("io-8000", 0xa4808000u);
+	gx6706_spi_dump_abs("io-8070", 0xa4808070u);
+	gx6706_spi_dump_abs("io-0138", 0xa4800138u);
+	gx6706_spi_dump_abs("io-0140", 0xa4800140u);
+	gx6706_spi_dump_abs("io-0144", 0xa4800144u);
+	gx6706_spi_dump_abs("io-0148", 0xa4800148u);
+	gx6706_spi_dump_abs("io-014c", 0xa480014cu);
+	gx6706_spi_dump_abs("io-4164", 0xa4804164u);
+	gx6706_spi_dump_abs("io-4168", 0xa4804168u);
+	gx6706_spi_dump_abs("io-900c", 0xa480900cu);
+	gx6706_spi_dump_abs("io-81b0", 0xa48081b0u);
+	gx6706_spi_dump_abs("io-81b8", 0xa48081b8u);
+	gx6706_spi_dump_abs("io-9110", 0xa4809110u);
+	gx6706_spi_dump_abs("io-9130", 0xa4809130u);
+	gx6706_spi_dump_abs("io-9150", 0xa4809150u);
+	/* Dump each 32-bit DW-SSI register slot through the data register. */
+	for (i = 0; i <= DWSPI_DR; i += 4) {
+		bc_puts("SPIREG offset=");
+		bc_put_hex(i);
+		bc_puts(" value=");
+		bc_put_hex(gx_spi_debug_reg(i));
+		bc_puts("\r\n");
+	}
+	bc_puts("SPIREG offset=");
+	bc_put_hex(DWSPI_RX_SAMPLE_DLY);
+	bc_puts(" value=");
+	bc_put_hex(gx_spi_debug_reg(DWSPI_RX_SAMPLE_DLY));
+	bc_puts("\r\n");
+	bc_puts("SPIREG offset=");
+	bc_put_hex(DWSPI_SPI_CTRLR0);
+	bc_puts(" value=");
+	bc_put_hex(gx_spi_debug_reg(DWSPI_SPI_CTRLR0));
+	bc_puts("\r\n");
+	bc_puts("SPI REGDUMP END\r\n");
+}
+#endif
+
 static void cache_flush(void)
 {
 	u32 op = BIT(0) | BIT(1) | BIT(4) | BIT(5);
@@ -149,6 +212,47 @@ int bc_spi_load_uboot(void)
 	u32 boot_start, boot_end, off, step;
 
 	gx_spi_init();
+	{
+		u8 jedec[3] = { 0xffu, 0xffu, 0xffu };
+		int ret;
+
+		ret = gx_spi_read_id(jedec);
+		if (ret == 0) {
+			if (g_verbose) {
+				bc_puts("SPI JEDEC ID: ");
+				bc_put_hex(((u32)jedec[0] << 16) |
+					   ((u32)jedec[1] << 8) | jedec[2]);
+				bc_puts("\r\n");
+			}
+		} else if (g_verbose) {
+			bc_puts("SPI JEDEC read failed rc=");
+			bc_put_hex((u32)ret);
+			bc_puts(" id=");
+			bc_put_hex(((u32)jedec[0] << 16) |
+				   ((u32)jedec[1] << 8) | jedec[2]);
+#if defined(SOC_GX6706)
+			bc_puts(" sr=");
+			bc_put_hex(gx_spi_status());
+			bc_puts(" wrap=");
+			bc_put_hex(gx_spi_wrapper_status());
+			bc_puts(" pad=");
+			bc_put_hex(gx_spi_pad_status());
+#else
+			bc_puts(" ctrl=");
+			bc_put_hex(readl(GXFLASH_VIRT + GXFLASH_CTRL));
+			bc_puts(" stat=");
+			bc_put_hex(readl(GXFLASH_VIRT + GXFLASH_STAT));
+			bc_puts(" data=");
+			bc_put_hex(readl(GXFLASH_VIRT + GXFLASH_DATA));
+			bc_puts(" route=");
+			bc_put_hex(readl(SPI_ROUTE_REG_VIRT));
+#endif
+			bc_puts("\r\n");
+#if defined(SOC_GX6706)
+			gx6706_spi_dump_regs();
+#endif
+		}
+	}
 
 	if (gx_table_load(&tbl))
 		return -1;

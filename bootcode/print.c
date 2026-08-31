@@ -29,6 +29,60 @@ void bc_put_hex(u32 v)
 		bc_putc(hex[(v >> (i * 4)) & 0xf]);
 }
 
+static void bc_put_hex_word(u32 v)
+{
+	static const char hex[] = "0123456789abcdef";
+	int i;
+
+	for (i = 7; i >= 0; i--)
+		bc_putc(hex[(v >> (i * 4)) & 0xf]);
+}
+
+static void bc_chip_name(void)
+{
+	int i;
+	int first = 0;
+	int valid = 1;
+
+	/* Short Gemini names are zero-padded at the start of the raw field. */
+	while (first < 12 && readb(GX_CHIP_NAME_VIRT + (u32)first) == 0)
+		first++;
+	if (first == 12)
+		valid = 0;
+	for (i = first; i < 12; i++) {
+		u8 c = readb(GX_CHIP_NAME_VIRT + (u32)i);
+
+		if (c < 0x20u || c > 0x7eu)
+			valid = 0;
+	}
+
+	bc_puts("chip name: ");
+	if (!valid) {
+		bc_puts("unavailable");
+	} else {
+		/* Reverse the field, omitting what becomes trailing NUL padding. */
+		for (i = 11; i >= first; i--)
+			bc_putc((char)readb(GX_CHIP_NAME_VIRT + (u32)i));
+	}
+	bc_puts("\r\n");
+}
+
+static void bc_public_id(void)
+{
+	u32 low = readl(GX_PUBLIC_ID_VIRT);
+	u32 high = readl(GX_PUBLIC_ID_VIRT + 4u);
+
+	bc_puts("public id: ");
+	if ((!low && !high) || (low == 0xffffffffu && high == 0xffffffffu)) {
+		bc_puts("unavailable");
+	} else {
+		/* Match the byte-reversed display order used by stock GxLoader. */
+		bc_put_hex_word(high);
+		bc_put_hex_word(low);
+	}
+	bc_puts("\r\n");
+}
+
 void bc_put_dec(u32 v)
 {
 	char buf[11];
@@ -63,4 +117,6 @@ void bc_banner(void)
 	bc_puts(" (");
 	bc_puts(IPL_CHIP);
 	bc_puts(")\r\n");
+	bc_chip_name();
+	bc_public_id();
 }
