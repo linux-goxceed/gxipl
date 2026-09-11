@@ -12,6 +12,9 @@
 #include "ipl_config_api.h"
 #include "ipl_internal.h"
 
+#ifdef SOC_UNIVERSAL
+extern const u32 ddr_regs_0[155];
+#else
 static const u32 gx6706_ddr_regs_0[155] = {
 	0x00000400u, 0x00000000u, 0x000208d5u, 0x00000085u, 0x0000014du, 0x02081202u,
 	0x1e270702u, 0x05050a05u, 0x00b64b08u, 0x00000505u, 0x0a0a0101u, 0x0000c814u,
@@ -40,6 +43,7 @@ static const u32 gx6706_ddr_regs_0[155] = {
 	0x13070303u, 0x0000000fu, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
 	0x00000000u, 0x00000204u, 0x00000000u, 0x00000000u, 0x00000001u,
 };
+#endif
 
 static const u32 gx6706_ddr_regs_100[31] = {
 	0x2627260cu, 0x263a260au, 0x212900a0u, 0x00000048u, 0x4303a003u, 0x00000000u,
@@ -133,7 +137,7 @@ static void gx6706_clock_route(u8 index, u32 value, u32 gate_offset,
 	writel(readl(gate) | gate_mask, gate);
 }
 
-static int gx6706_clocks_init(void)
+int gx6706_clocks_init(void)
 {
 	u32 reg;
 
@@ -208,7 +212,7 @@ static void gx6706_apply_efuse(void)
 	}
 }
 
-static int gx6706_ddr_init(void)
+int gx6706_ddr_init(void)
 {
 	u8 variant = 0;
 	u32 geometry;
@@ -224,7 +228,11 @@ static int gx6706_ddr_init(void)
 	writel(readl(SYS_BASE) & ~BIT(0), SYS_BASE);
 	gx6706_ddr_crg_init();
 
+#ifdef SOC_UNIVERSAL
+	geometry = (((ddr_regs_0[5] >> 16) & 0x1fu) - 4u) >> 1;
+#else
 	geometry = (((gx6706_ddr_regs_0[5] >> 16) & 0x1fu) - 4u) >> 1;
+#endif
 	writel(readl(SYS_BASE + 0x120u) | BIT(0) | BIT(31), SYS_BASE + 0x120u);
 	writel(readl(SYS_BASE + 0x124u) | 0x00220440u |
 	       (variant == 1u ? BIT(29) : 0), SYS_BASE + 0x124u);
@@ -232,8 +240,16 @@ static int gx6706_ddr_init(void)
 	writel(readl(SYS_BASE + 0x12cu) | geometry, SYS_BASE + 0x12cu);
 	writel(readl(SYS_BASE + 0x210u) | 0x88888888u, SYS_BASE + 0x210u);
 
+#ifdef SOC_UNIVERSAL
+	for (i = 0; i < 155u; i++)
+		writel(ddr_regs_0[i], DDR_BASE + (i << 2));
+	writel(0x00000000u, DDR_BASE + (28u << 2));
+	writel(0x00004e00u, DDR_BASE + (74u << 2));
+	writel(0x00003030u, DDR_BASE + (81u << 2));
+#else
 	for (i = 0; i < ARRAY_SIZE(gx6706_ddr_regs_0); i++)
 		writel(gx6706_ddr_regs_0[i], DDR_BASE + (i << 2));
+#endif
 	for (i = 0; i < ARRAY_SIZE(gx6706_ddr_regs_100); i++)
 		writel(gx6706_ddr_regs_100[i], DDR_BASE + ((0x100u + i) << 2));
 	if (variant == 3u) {
@@ -258,6 +274,8 @@ static int gx6706_ddr_init(void)
 	return 0;
 }
 
+#ifndef SOC_UNIVERSAL
+__attribute__((used, externally_visible))
 int ipl_pre_mmu(void)
 {
 	ipl_quiet = ipl_config_verbose_early();
@@ -272,3 +290,4 @@ int ipl_pre_mmu(void)
 	}
 	return 0;
 }
+#endif

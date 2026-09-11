@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Build a GX6702 (64 KiB) or GX6706 (128 KiB) BOOT/TABLE pair."""
+"""Build a BOOT/TABLE pair. Defaults: 64 KiB for SOC=gx6702, 128 KiB for SOC=gx6706.
+
+Those sizes are this tree's packaging defaults, not a silicon limit. Vendor
+images of either SoC can use the other BOOT size depending on SDK config.
+"""
 
 from __future__ import annotations
 

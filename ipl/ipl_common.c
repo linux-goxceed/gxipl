@@ -2,10 +2,13 @@
 /* Shared CK610 stage-1 helpers and post-MMU loader path. */
 
 #include "gx_hw.h"
-#include "gx_spi.h"
+#include "gx_chip.h"
 #include "bootcode_hdr.h"
 #include "ipl_config_api.h"
 #include "ipl_internal.h"
+#ifndef SOC_UNIVERSAL
+#include "gx_spi.h"
+#endif
 
 void delay(u32 outer)
 {
@@ -144,6 +147,17 @@ static u32 read_u32(u32 uart)
 	return value;
 }
 
+void ipl_print_gxid(u32 uart)
+{
+	if (!gx_detected_name[0])
+		gx_chip_probe(GX_CHIP_NAME_VIRT);
+	uart_puts_at(uart, "GXID family=");
+	uart_puts_at(uart, gx_family_tag(gx_detected_family));
+	uart_puts_at(uart, " name=");
+	uart_puts_at(uart, gx_detected_name);
+	uart_puts_at(uart, "\r\n");
+}
+
 static void cache_writeback_invalidate_all(void)
 {
 	u32 op = BIT(0) | BIT(1) | BIT(4) | BIT(5);
@@ -167,6 +181,7 @@ static int uart_recv_image(u8 *destination, u32 max_size, u32 *out_size)
 	u32 i;
 
 	uart_flush_rx(UART_VIRT);
+	ipl_print_gxid(UART_VIRT);
 	/* Vendor-compatible ready marker; newer/raw uploaders also match GET. */
 	uart_puts_at(UART_VIRT, "RUNGET");
 	/* The host transmits immediately, so do not flush after the marker. */
@@ -204,6 +219,7 @@ static void jump_to(u32 entry)
 		;
 }
 
+#ifndef SOC_UNIVERSAL
 static int try_spi_bootcode(const struct ipl_config *cfg)
 {
 	struct bootcode_hdr hdr;
@@ -229,6 +245,7 @@ static int try_spi_bootcode(const struct ipl_config *cfg)
 	jump_to(hdr.entry ? hdr.entry : BOOTCODE_ENTRY);
 	return 0;
 }
+#endif
 
 static void run_uart_payload(u8 *buf, u32 size)
 {
@@ -289,6 +306,7 @@ static void run_uart_payload(u8 *buf, u32 size)
 	jump_to(UBOOT_ENTRY);
 }
 
+__attribute__((used, externally_visible))
 void ipl_post_mmu(void)
 {
 	struct ipl_config cfg;
@@ -297,8 +315,10 @@ void ipl_post_mmu(void)
 	ipl_config_load(&cfg);
 	if (cfg.flags & IPL_CFG_UART_DIRECT)
 		goto uart_load;
+#ifndef SOC_UNIVERSAL
 	if (!(cfg.flags & IPL_CFG_SKIP_SPI) && try_spi_bootcode(&cfg) == 0)
 		return;
+#endif
 
 uart_load:
 	if (uart_recv_image((u8 *)UBOOT_ENTRY, UBOOT_MAX_SIZE, &size)) {

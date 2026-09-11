@@ -4,6 +4,8 @@
 bootcode for NationalChip C-SKY CK610 ABIv1 SoCs. Plain `make` retains the
 GX6702 build. `SOC=gx6706` selects the generic Cygnus H5/S5 initialization
 path recovered from the byte-identical vendor H5 and S5 stage-1 bodies.
+`SOC=universal` builds a UART-only chip-probe stub that trains DDR from the
+silicon name register, prints `GXID`, then waits for `RUNGET`.
 
 U-Boot itself is not part of this repository or port.
 
@@ -19,7 +21,8 @@ The GX6706 implementation includes:
   TABLE/BOOT discovery, and USB EHCI/FAT32 loading;
 - the GX6702/GX6706 chip name and eight-byte public ID in the verbose bootcode
   banner;
-- GX6706 BootROM containers, 128 KiB BOOT images and updated TABLE images.
+- GX6706 BootROM containers, and this tree's default 128 KiB BOOT/TABLE
+  packaging for that SoC (BOOT size is an SDK/image choice, not silicon).
 
 The checked-in `../loader-test` console captures prove that the H5, S5 and X5
 vendor loaders all reach DDR-resident GxLoader on the available board, read its
@@ -32,9 +35,11 @@ loading and repeated cold-boot testing remain hardware-validation gates.
 
 ## Boot flow
 
-1. BootROM loads an 8 KiB SRAM stage-1 body at `0x00100000`.
+1. BootROM loads an 8 KiB SRAM stage-1 body at `0x00100000`. UART Stage 1 is
+   shared across Gemini and Cygnus; the `.boot` chip ID is host-only.
 2. Stage-1 initializes UART, clocks and DDR, enables the shared MMU layout,
-   then loads a `GXBC` bootcode record from SPI offset `0x4000` or UART.
+   prints `GXID`, then loads a `GXBC` bootcode record from SPI offset `0x4000`
+   or UART (`RUNGET`). The universal UART stub skips SPI.
 3. Bootcode tries USB FAT32, SPI BOOT and UART in that order. `force_uart` and
    the existing skip flags can change this selection.
 
@@ -59,6 +64,11 @@ make
 # Generic GX6706 IPL + bootcode
 make SOC=gx6706 all
 
+# UART chip-probe stub (no flash image, no bootcode)
+make SOC=universal
+# optional vendor-gxdl second envelope (do not send both members on UART)
+make SOC=universal allinone
+
 # Host format tests
 make test
 ```
@@ -75,13 +85,70 @@ Create a flash-layout pair with:
 
 ```sh
 make SOC=gx6706 flash-image
-# BOOT-gx6706.bin  = 128 KiB
+# BOOT-gx6706.bin  = 128 KiB in this tree's default packaging
 # TABLE-gx6706.bin = matching 512-byte partition table
 ```
 
 The GX6706 container uses family chip ID `0x6705`. Its trailer at body offset
 `0x1ff8` is the MSB-first CRC-32 (`0x04C11DB7`, init `0xffffffff`, no final
 XOR) over body bytes `0x0000..0x1ff7`.
+
+## UART chip-probe stub
+
+Flashers that do not know the board can send one SRAM image. Stage-1 reads the
+chip-name register, trains Gemini or Cygnus DDR, then identifies itself:
+
+```text
+GXID family=gemini name=6702S5-NNNB\r\n
+RUNGET
+```
+
+That `GXID` line is the ident API. Hosts must ignore BootROM handshake noise
+(`B0`/`B8`/`X` and GX6706 extra status bytes) until it appears. Map
+`family=gemini` to `gx6702-bootcode.bin` and `family=cygnus` to
+`gx6706-bootcode.bin` (DDR init family, not a BOOT partition size). This
+tree's flash helpers default to 64 KiB BOOT for `SOC=gx6702` and 128 KiB for
+`SOC=gx6706`, but that is SDK/firmware layout: a GX6702 image can be built
+with 128 KiB BOOT, and a GX6706 image can use 64 KiB. Read the on-flash TABLE
+for the real size.
+
+`family=gx6616` and `family=gx3211` share the 8 KiB Stage 1 window with
+Gemini/Cygnus (`PROTOCOL.md`). `family=gx6612` is a 10 KiB IPL in the 16 KiB
+`0x6612` BootROM transfer. None of those three have open DDR init or hardware
+coverage: the stub prints `GXID` then `ENODDR` and does not issue `RUNGET`.
+
+```sh
+make SOC=universal
+make bootcode
+make SOC=gx6706 bootcode
+python3 libre_gxdl.py -b gx-universal-ipl.boot -d /dev/ttyUSB0 \
+  --bootcode-dir .
+```
+
+After `GXID`, the host sends `gx6702-bootcode.bin` or `gx6706-bootcode.bin` as
+`GXBC`. If that file is missing it stops; it does not resend the 8 KiB stub
+as vendor Stage 2 (`EBUNDLE`).
+
+`gx-universal-ipl.boot` is an 8 KiB UART container with chip ID `0x6701` (so
+vendor gxdl still sees Gemini) and a Cygnus-style CRC-32 trailer.
+`utils/mkboot.py --soc universal` writes extra 8 KiB targets into `GXMT`
+(`0x6705` / `0x6616` / `0x3211`). Other wraps stay zeros unless you pass
+`--extra-chip-id` (repeatable) or `--no-extra-chip-ids`. `libre_gxdl.py`
+prints the catalog when present; Stage 2 still follows `GXID`. The earlier
+Gemini UART confirmation used a zeros-reserved image and still selected
+`gx6702-bootcode.bin` from `GXID family=gemini name=6702S5-NNNB`. Stock
+`boot.elf` ignores the reserved field (it still prints `chip: 6701` and
+uploads). It then sends the 8224-byte file as Stage 2; open IPL answers
+`EBUNDLE` because there is no `GXUB`/`GXBC` — that is IPL-only, not a header
+reject. Use `libre_gxdl.py --bootcode-dir .` for Stage 2. Flash CRC remains
+Cygnus-only; `SOC=universal` does not produce a flash `BOOT.bin`.
+
+Hardware: that one `.boot` reached GoXceed on GX6702S5-NNNB. Cygnus still
+needs the same stub plus `gx6706-bootcode.bin`. A `0x6705`-headered copy of
+the same body is still untested on UART.
+
+Do not concatenate an optional `GXAI` second envelope into open-IPL Stage 2
+(`EBUNDLE`). Open flashers send the shared Stage 1 once.
 
 ## RAM-only functional bring-up
 
@@ -172,15 +239,19 @@ being written.
 
 ## Flash artifact layout
 
-| Location | GX6706 content |
+This tree's default `make SOC=gx6706 flash-image` uses a 128 KiB BOOT. The
+on-device partition can be 64 KiB or 128 KiB depending on how that firmware
+was configured in the SDK, on either Gemini or Cygnus.
+
+| Location | Default GX6706 packaging in this tree |
 | --- | --- |
 | BOOT `0x00000` | `AA55AA55` marker |
 | BOOT `0x00004` | fixed 8 KiB stage-1 body |
 | BOOT `0x04000` | `GXBC` + open DDR bootcode |
-| flash `0x20000` | updated TABLE partition |
+| flash `0x20000` | updated TABLE partition (after a 128 KiB BOOT) |
 | BOOT `0x10000` | optional second `GXBC` payload when explicitly packaged |
 
-GX6702 keeps its established 64 KiB BOOT targets and behavior. See
+`make` / `SOC=gx6702` defaults to a 64 KiB BOOT and TABLE at `0x10000`. See
 `REVERSE_ENGINEERING.md` for the clean-room register recovery notes.
 
 ## License

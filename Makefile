@@ -7,7 +7,7 @@ OBJCOPY := $(CROSS_COMPILE)objcopy
 OBJDUMP := $(CROSS_COMPILE)objdump
 
 SOC ?= gx6702
-SUPPORTED_SOCS := gx6702 gx6706
+SUPPORTED_SOCS := gx6702 gx6706 universal
 
 ifeq ($(filter $(SOC),$(SUPPORTED_SOCS)),)
 $(error unsupported SOC '$(SOC)' (expected one of: $(SUPPORTED_SOCS)))
@@ -20,11 +20,19 @@ SOC_CPPFLAGS := -DSOC_GX6706=1
 SOC_IPL_SRC := ipl/gx6706_ipl.c
 SOC_CHIP := GX6706
 BOOT_IMAGE_SIZE := 0x20000
+STAGE1_SPI := ipl/gx_spi.c
+else ifeq ($(SOC),universal)
+SOC_CPPFLAGS := -DSOC_UNIVERSAL=1
+SOC_IPL_SRC := ipl/ipl.c ipl/gx6706_ipl.c ipl/ipl_universal.c
+SOC_CHIP := universal
+IPL_ARTIFACT := gx-universal-ipl
+STAGE1_SPI :=
 else
 SOC_CPPFLAGS := -DSOC_GX6702=1
 SOC_IPL_SRC := ipl/ipl.c
 SOC_CHIP := GX6702
 BOOT_IMAGE_SIZE := 0x10000
+STAGE1_SPI := ipl/gx_spi.c
 endif
 
 IPL_CHIP ?= $(SOC_CHIP)
@@ -32,6 +40,13 @@ IPL_VERSION_BASE ?= 1.0.0-open
 
 ARCHFLAGS := -EL -mcpu=ck610
 INCLUDES := -Iinclude -Ibootcode -Ifatfs
+OPT ?= -Os
+LTO ?= 0
+
+ifeq ($(LTO),1)
+LTO_CFLAGS  := -flto
+LTO_LDFLAGS := -flto -fuse-linker-plugin
+endif
 
 GIT_HASH := $(shell git rev-parse --short HEAD 2>/dev/null)
 ifeq ($(GIT_HASH),)
@@ -43,9 +58,9 @@ endif
 CPPFLAGS := $(SOC_CPPFLAGS) \
 	-DIPL_CHIP=\"$(IPL_CHIP)\" -DIPL_VERSION_STR=\"$(IPL_VERSION_STR)\" \
 	-DIPL_CONFIG_VA=0x00101e00u
-CFLAGS := $(ARCHFLAGS) -Os -std=c99 -ffreestanding -fno-builtin \
+CFLAGS := $(ARCHFLAGS) $(OPT) -std=c99 -ffreestanding -fno-builtin \
 	-fno-stack-protector -fomit-frame-pointer -nostdlib -Wall -Wextra \
-	-ffunction-sections -fdata-sections $(INCLUDES) $(CPPFLAGS)
+	-ffunction-sections -fdata-sections $(INCLUDES) $(CPPFLAGS) $(LTO_CFLAGS)
 
 LINKER_IPL := ld/linker-8k.ld
 LDFLAGS_IPL := -EL -nostdlib --gc-sections -T $(LINKER_IPL)
@@ -53,7 +68,7 @@ LDFLAGS_BC  := -EL -nostdlib --gc-sections -T ld/linker-bootcode.ld
 
 BUILD_DIR := build/$(TARGET)
 STAGE1_SRCS := ipl/start.S $(SOC_IPL_SRC) ipl/ipl_common.c \
-	ipl/ipl_config.c ipl/gx_spi.c
+	ipl/ipl_config.c ipl/gx_chip.c $(STAGE1_SPI)
 BC_SRCS := bootcode/main.c bootcode/print.c bootcode/spi_boot.c \
 	bootcode/uart_boot.c bootcode/usb_boot.c bootcode/elf.c \
 	bootcode/lib.c bootcode/gx_table.c bootcode/usb/usb_msc.c \
@@ -62,15 +77,29 @@ STAGE1_OBJS := $(addprefix $(BUILD_DIR)/,$(STAGE1_SRCS:.c=.o))
 STAGE1_OBJS := $(STAGE1_OBJS:.S=.o)
 BC_OBJS := $(addprefix $(BUILD_DIR)/,$(BC_SRCS:.c=.o))
 
-.PHONY: all clean bootcode ipl flash-image test flash-probe64 flash-verbose flash-uboot
+.PHONY: all clean bootcode ipl flash-image test flash-probe64 flash-verbose flash-uboot allinone
 
+ifeq ($(SOC),universal)
+all: $(IPL_ARTIFACT).boot $(IPL_ARTIFACT).dis
+else
 all: $(IPL_ARTIFACT).boot $(TARGET)-bootcode.bin $(IPL_ARTIFACT).dis
+endif
 
 ipl: $(IPL_ARTIFACT).boot
 
 bootcode: $(TARGET)-bootcode.bin
 
+ifeq ($(SOC),universal)
+flash-image:
+	$(error SOC=universal is UART-only; flash images remain family-split)
+else
 flash-image: TABLE-$(SOC).bin
+endif
+
+allinone: gx-universal-ipl-allinone.boot
+
+gx-universal-ipl-allinone.boot: gx-universal-ipl.boot utils/mkallinone.py
+	python3 utils/mkallinone.py $< $@
 
 test:
 	python3 -m unittest discover -s tests -v
@@ -94,7 +123,12 @@ BOOT-flash-uboot.bin: utils/mk_flash_image.py bootcode/main.c
 		--table-out TABLE-flash-uboot.bin
 
 $(IPL_ARTIFACT).elf: $(STAGE1_OBJS) $(LINKER_IPL)
+ifeq ($(LTO),1)
+	$(CC) $(ARCHFLAGS) -nostdlib -nostartfiles $(LTO_LDFLAGS) \
+		-Wl,--gc-sections -T $(LINKER_IPL) -o $@ $(STAGE1_OBJS)
+else
 	$(LD) $(LDFLAGS_IPL) -o $@ $(STAGE1_OBJS)
+endif
 
 $(IPL_ARTIFACT).bin: $(IPL_ARTIFACT).elf
 	$(OBJCOPY) -O binary $< $@
@@ -106,7 +140,12 @@ $(IPL_ARTIFACT).dis: $(IPL_ARTIFACT).elf
 	$(OBJDUMP) -d $< > $@
 
 $(TARGET)-bootcode.elf: $(BC_OBJS) ld/linker-bootcode.ld
+ifeq ($(LTO),1)
+	$(CC) $(ARCHFLAGS) -nostdlib -nostartfiles $(LTO_LDFLAGS) \
+		-Wl,--gc-sections -T ld/linker-bootcode.ld -o $@ $(BC_OBJS)
+else
 	$(LD) $(LDFLAGS_BC) -o $@ $(BC_OBJS)
+endif
 
 $(TARGET)-bootcode.bin: $(TARGET)-bootcode.elf
 	$(OBJCOPY) -O binary $< $@
@@ -144,6 +183,8 @@ clean:
 		gx6702-bootcode.elf gx6702-bootcode.bin gx6702-bootcode.dis \
 		gx6706-ipl.elf gx6706-ipl.bin gx6706-ipl.boot gx6706-ipl.dis \
 		gx6706-bootcode.elf gx6706-bootcode.bin gx6706-bootcode.dis \
+		gx-universal-ipl.elf gx-universal-ipl.bin gx-universal-ipl.boot \
+		gx-universal-ipl.dis gx-universal-ipl-allinone.boot \
 		BOOT.bin BOOT-gx6702.bin BOOT-gx6706.bin \
 		TABLE-gx6702.bin TABLE-gx6706.bin \
 		BOOT-flash-probe64.bin TABLE-flash-probe64.bin \

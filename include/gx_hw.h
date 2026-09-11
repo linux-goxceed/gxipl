@@ -12,6 +12,7 @@
 #define EFUSE_STATUS		0x00f80088u
 
 /* Reversed-byte identification fields shared by Gemini and Cygnus. */
+#define GX_CHIP_NAME_PHYS	(SYS_BASE + 0x190u)
 #define GX_CHIP_NAME_VIRT	0xa030a190u
 #define GX_PUBLIC_ID_VIRT	0xa030a560u
 

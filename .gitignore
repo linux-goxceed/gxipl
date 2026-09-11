@@ -2,6 +2,7 @@ gx6702-ipl.*
 gx6702-bootcode.*
 gx6706-ipl.*
 gx6706-bootcode.*
+gx-universal-ipl.*
 build/
 *-regdump.txt
 BOOT*.bin

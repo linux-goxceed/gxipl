@@ -12,7 +12,11 @@
 #include "ipl_config_api.h"
 #include "ipl_internal.h"
 
+#ifdef SOC_UNIVERSAL
+const u32 ddr_regs_0[155] = {
+#else
 static const u32 ddr_regs_0[155] = {
+#endif
 	0x00000400u, 0x00000000u, 0x000208d5u, 0x00000085u, 0x0000014du, 0x02081202u,
 	0x1e270702u, 0x05050a05u, 0x00b64b08u, 0x00000505u, 0x0a0a0101u, 0x0000c814u,
 	0x010b1e03u, 0x0000000au, 0x00570100u, 0x00000a28u, 0x00120004u, 0x000a0005u,
@@ -179,7 +183,7 @@ static void peripheral_clocks_init(void)
 	writel(0xc3ebc27fu, SYS_BASE + 0x17cu);
 }
 
-static int clocks_init(void)
+int gx6702_clocks_init(void)
 {
 	u32 reg;
 
@@ -250,7 +254,7 @@ static void ddr_apply_efuse(void)
 		  (bytes[2] & 0x80u) ? 10u : 0u);
 }
 
-static int ddr_init(void)
+int gx6702_ddr_init(void)
 {
 	u32 i;
 	u32 geometry;
@@ -291,19 +295,22 @@ static int ddr_init(void)
 	return 0;
 }
 
+#ifndef SOC_UNIVERSAL
+__attribute__((used, externally_visible))
 int ipl_pre_mmu(void)
 {
 	/* Config lives in the already-mapped IPL image; peek before crumbs. */
 	ipl_quiet = ipl_config_verbose_early();
 	ipl_crumb('I');
 
-	if (clocks_init()) {
+	if (gx6702_clocks_init()) {
 		uart_puts_at(UART_PHYS, "EPLL\r\n");
 		return -1;
 	}
-	if (ddr_init()) {
+	if (gx6702_ddr_init()) {
 		uart_puts_at(UART_PHYS, "EDDR\r\n");
 		return -1;
 	}
 	return 0;
 }
+#endif

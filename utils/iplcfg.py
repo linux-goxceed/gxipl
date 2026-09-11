@@ -107,13 +107,16 @@ def main() -> int:
     body_base = HEADER_SIZE if data[:4] == b"toob" else 0
     trailer = body_base + TRAILER_OFF
     if args.soc == "auto":
-        if body_base:
+        stored = struct.unpack_from("<I", data, trailer)[0]
+        calculated = bootrom_stage1_crc(
+            bytes(data[body_base:body_base + TRAILER_OFF]))
+        if stored == calculated:
+            soc = "gx6706"
+        elif body_base:
             chip_id = struct.unpack_from("<H", data, 6)[0]
             soc = "gx6706" if chip_id == 0x6705 else "gx6702"
         else:
-            stored = struct.unpack_from("<I", data, trailer)[0]
-            calculated = bootrom_stage1_crc(bytes(data[:TRAILER_OFF]))
-            soc = "gx6706" if stored == calculated else "gx6702"
+            soc = "gx6702"
     else:
         soc = args.soc
     cfg = load_config(bytes(data[off:off + CONFIG_SIZE]))

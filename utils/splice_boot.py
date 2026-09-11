@@ -21,7 +21,7 @@ def main() -> int:
     ap.add_argument("--uboot-off", type=lambda x: int(x, 0), default=0x10000)
     ap.add_argument("-o", "--output", type=Path, required=True)
     ap.add_argument("--size", type=lambda x: int(x, 0), default=64 * 1024,
-                    help="output BOOT image size (GX6702 64K, GX6706 128K)")
+                    help="output BOOT image size (this tree: 64K gx6702, 128K gx6706; SDK images vary)")
     args = ap.parse_args()
 
     ipl = args.ipl_boot.read_bytes()

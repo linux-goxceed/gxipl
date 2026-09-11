@@ -3,9 +3,16 @@
 ## Boot chain
 
 The UART and flash BootROMs both load a fixed **8 KiB** stage-1 window into
-SRAM at `0x00100000`. UART: header byte `0x08`, host payload
-`boot[0x20:0x201C]` = **8188 bytes**. Flash: `BOOT.bin[4:0x2000]` with a
-CRC32 trailer at body `0x1FF8`.
+SRAM at `0x00100000`. UART command `0x59` plus word count `0x0800` plus
+`boot[0x20:0x201C]` (**8188 bytes**) plus the `boot` marker is the same on
+GX6702 and GX6706. The `toob` chip ID at offset 6 is host metadata (vendor
+gxdl / libre-gxdl pick 8 KiB vs 4 KiB vs 16 KiB layouts). Neither 16 KiB
+BootROM image compares that field, `toob`, or `0x6705` during UART Stage 1.
+UART does not run the flash CRC-32 (`0x04c11db7`) over SRAM `0x00101FF8`.
+GX6706 may emit extra status bytes after `0x59`; hosts ignore junk until
+`GXID`. Flash BootROM stays family-split: Cygnus verifies that CRC, Gemini
+keeps the legacy trailer. There is no single flash `BOOT.bin` for both
+families.
 
 The reset-vector branch then enters the IPL implementation at
 `0x00100040`. The legacy vector used a `jsri` whose target came from a
@@ -234,6 +241,24 @@ raw NUL treated as trailing string padding, produces `6702S5-NNNB`. The vendor
 board detector compares only the first six characters and consequently emits
 the shorter `6702S5` before the NOR banner.
 
+The UART chip-probe stub reads the same 12-byte field at physical
+`SYS_BASE+0x190` (`0x0030a190`) before DDR, maps `6701`/`6702`/`6703` to
+Gemini clocks and `6705`/`6706` to Cygnus clocks, then prints a
+machine-parseable line before `RUNGET`:
+
+```text
+GXID family=gemini name=6702S5-NNNB\r\n
+```
+
+`family` is `gemini` or `cygnus` when open DDR init exists. `gx6616` and
+`gx3211` (8 KiB UART window) and `gx6612` (10 KiB IPL in a 16 KiB BootROM
+window, see `PROTOCOL.md`) are detection-only: untested, no DDR, `ENODDR`,
+no `RUNGET`. Completely unknown silicon prints `family=unknown` and `ECHIP`.
+`name=` is the reversed printable string or `unavailable`. Hardware still
+needs to confirm that one CRC-sealed universal body with a `0x6701` header
+reaches `GXID` on a GX6706 UART box, and a `0x6705` header does the same on
+GX6702 UART; BootROM must not hang on the envelope.
+
 GX6702 cross-board RDID results also separate flash support from controller
 transport: a box identified by GxLoader as EN25Q32 returns `1c 30 16`, while a
 box identified as XM25QH32B/XM25QH32C/XM25QE32C returns `20 40 16`. Both are
@@ -256,8 +281,11 @@ The UART header uses family chip ID `0x6705`. The container is a 32-byte
 BootROM consumes 8188 bytes before the trailer. GX6706 requires the MSB-first
 CRC-32 (`0x04c11db7`, init `0xffffffff`, no XOR-out) at body `0x1ff8`.
 
-The stock GX6706 BOOT partition is 128 KiB. Generated images place the stage-1
-body at file offset `0x4`, a `GXBC` stage-2 at `0x4000`, and TABLE immediately
-after BOOT at flash offset `0x20000`. TABLE multi-byte partition fields remain
+The stock GX6706 image used for recovery here has a 128 KiB BOOT partition.
+That size is an SDK/firmware layout choice, not a Cygnus hardware limit:
+Gemini (GX6702) images are also built with 128 KiB BOOT, and a Cygnus image
+can use 64 KiB. Generated images in this tree default to 128 KiB for
+`SOC=gx6706` (stage-1 body at file offset `0x4`, `GXBC` stage-2 at `0x4000`,
+TABLE immediately after BOOT). TABLE multi-byte partition fields remain
 big-endian; its per-BOOT CRC and TABLE CRC use the existing reflected/zlib
 CRC-32 convention, not the BootROM trailer algorithm.

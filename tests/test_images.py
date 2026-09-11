@@ -27,7 +27,8 @@ def config_sum(config: bytes) -> int:
 
 
 class BootRomContainerTests(unittest.TestCase):
-    def run_mkboot(self, soc: str | None, payload: bytes = b"IPL") -> bytes:
+    def run_mkboot(self, soc: str | None, payload: bytes = b"IPL",
+                   extra_args: list[str] | None = None) -> bytes:
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "ipl.bin"
             output = Path(directory) / "ipl.boot"
@@ -35,6 +36,8 @@ class BootRomContainerTests(unittest.TestCase):
             command = [sys.executable, str(UTILS / "mkboot.py")]
             if soc is not None:
                 command += ["--soc", soc]
+            if extra_args:
+                command += extra_args
             command += [str(source), str(output)]
             subprocess.run(command, check=True, capture_output=True, text=True)
             return output.read_bytes()
@@ -65,6 +68,94 @@ class BootRomContainerTests(unittest.TestCase):
     def test_code_window_is_enforced(self) -> None:
         with self.assertRaises(subprocess.CalledProcessError):
             self.run_mkboot("gx6706", bytes(0x1E01))
+
+    def test_universal_crc_sealed_6701_header(self) -> None:
+        image = self.run_mkboot("universal")
+        self.assertEqual(len(image), 0x2020)
+        self.assertEqual(image[:4], b"toob")
+        self.assertEqual(struct.unpack_from("<H", image, 6)[0], 0x6701)
+        self.assertEqual(image[0x0C:0x10], mkboot.GXMT_MAGIC)
+        self.assertEqual(mkboot.parse_target_catalog(image),
+                         [0x6705, 0x6616, 0x3211])
+        self.assertEqual(mkboot.header_supported_chip_ids(image),
+                         [0x6701, 0x6705, 0x6616, 0x3211])
+        body = image[0x20:]
+        self.assertEqual(struct.unpack_from("<I", body, 0x1FF8)[0],
+                         mkboot.bootrom_stage1_crc(body[:0x1FF8]))
+
+    def test_dedicated_headers_leave_reserved_zero(self) -> None:
+        for soc in ("gx6702", "gx6706"):
+            image = self.run_mkboot(soc)
+            self.assertEqual(image[0x0C:0x20], bytes(20))
+            self.assertIsNone(mkboot.parse_target_catalog(image))
+
+    def test_cli_adds_extra_chip_ids(self) -> None:
+        image = self.run_mkboot("gx6702", extra_args=[
+            "--extra-chip-id", "0x6705",
+            "--extra-chip-id", "0x6616",
+        ])
+        self.assertEqual(struct.unpack_from("<H", image, 6)[0], 0x6701)
+        self.assertEqual(mkboot.parse_target_catalog(image), [0x6705, 0x6616])
+        self.assertEqual(mkboot.header_supported_chip_ids(image),
+                         [0x6701, 0x6705, 0x6616])
+
+    def test_cli_omits_primary_from_gxmt(self) -> None:
+        image = self.run_mkboot("universal", extra_args=[
+            "--extra-chip-id", "0x6701",
+            "--extra-chip-id", "0x6705",
+        ])
+        self.assertEqual(mkboot.parse_target_catalog(image), [0x6705])
+
+    def test_no_extra_chip_ids_clears_universal(self) -> None:
+        image = self.run_mkboot("universal", extra_args=["--no-extra-chip-ids"])
+        self.assertEqual(image[0x0C:0x20], bytes(20))
+        self.assertIsNone(mkboot.parse_target_catalog(image))
+
+    def test_vendor_stage2_strips_reserved_header_bytes(self) -> None:
+        header = bytearray(0x20)
+        header[:4] = b"toob"
+        struct.pack_into("<HHI", header, 4, 0x0100, 0x6701, 115200)
+        header[0x0C:0x20] = mkboot.pack_target_catalog((0x6705,))
+        body = bytes(0x2000)
+        boot = bytes(header) + body
+        content = boot[0:4] + boot[0x20:]
+        content += bytes(len(boot) - len(content))
+        self.assertEqual(content[0:4], b"toob")
+        self.assertEqual(content[4:0x20], bytes(0x1C))
+        self.assertNotIn(mkboot.GXMT_MAGIC, content)
+
+    def test_universal_code_window_is_enforced(self) -> None:
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.run_mkboot("universal", bytes(0x1E01))
+
+    def test_iplcfg_reseals_universal_crc(self) -> None:
+        image = self.patch_config(self.run_mkboot("universal"))
+        body = image[0x20:]
+        self.assertEqual(struct.unpack_from("<I", body, 0x1FF8)[0],
+                         mkboot.bootrom_stage1_crc(body[:0x1FF8]))
+        self.assertEqual(struct.unpack_from("<H", image, 6)[0], 0x6701)
+
+    def test_gxai_optional_second_envelope(self) -> None:
+        standalone = self.run_mkboot("universal")
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "ipl.boot"
+            output = Path(directory) / "allinone.boot"
+            source.write_bytes(standalone)
+            subprocess.run([
+                sys.executable, str(UTILS / "mkallinone.py"),
+                str(source), str(output),
+            ], check=True, capture_output=True, text=True)
+            image = output.read_bytes()
+        self.assertEqual(image[:0x2020], standalone)
+        self.assertEqual(image[0x2020:0x2024], b"GXAI")
+        version, count = struct.unpack_from("<HH", image, 0x2024)
+        self.assertEqual((version, count), (1, 1))
+        chip_id, flags, off, size = struct.unpack_from("<HHII", image, 0x2028)
+        self.assertEqual((chip_id, flags, size), (0x6705, 0, 0x2020))
+        member1 = image[off:off + size]
+        self.assertEqual(member1[:4], b"toob")
+        self.assertEqual(struct.unpack_from("<H", member1, 6)[0], 0x6705)
+        self.assertEqual(member1[0x20:], standalone[0x20:])
 
     def patch_config(self, image: bytes) -> bytes:
         with tempfile.TemporaryDirectory() as directory:
