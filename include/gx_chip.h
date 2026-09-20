@@ -2,6 +2,7 @@
 #ifndef GX_CHIP_H
 #define GX_CHIP_H
 
+#ifdef SOC_UNIVERSAL
 #include "gx_hw.h"
 #include "gx_types.h"
 
@@ -36,5 +37,7 @@ int gx_family_trains_ddr(int family);
 
 extern int gx_detected_family;
 extern char gx_detected_name[GX_CHIP_NAME_LEN + 1];
+
+#endif
 
 #endif

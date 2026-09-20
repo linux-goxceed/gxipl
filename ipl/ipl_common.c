@@ -147,6 +147,7 @@ static u32 read_u32(u32 uart)
 	return value;
 }
 
+#ifdef SOC_UNIVERSAL
 void ipl_print_gxid(u32 uart)
 {
 	if (!gx_detected_name[0])
@@ -157,7 +158,7 @@ void ipl_print_gxid(u32 uart)
 	uart_puts_at(uart, gx_detected_name);
 	uart_puts_at(uart, "\r\n");
 }
-
+#endif
 static void cache_writeback_invalidate_all(void)
 {
 	u32 op = BIT(0) | BIT(1) | BIT(4) | BIT(5);
@@ -181,7 +182,9 @@ static int uart_recv_image(u8 *destination, u32 max_size, u32 *out_size)
 	u32 i;
 
 	uart_flush_rx(UART_VIRT);
+	#ifdef SOC_UNIVERSAL
 	ipl_print_gxid(UART_VIRT);
+	#endif
 	/* Vendor-compatible ready marker; newer/raw uploaders also match GET. */
 	uart_puts_at(UART_VIRT, "RUNGET");
 	/* The host transmits immediately, so do not flush after the marker. */

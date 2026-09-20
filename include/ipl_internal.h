@@ -31,11 +31,14 @@ void pll_program(u32 addr, u32 value);
 void apply_patches(const struct field_patch *patches, u32 count);
 int efuse_read(u32 address, u8 *value);
 
+#if defined(SOC_GX6702) || defined(SOC_UNIVERSAL)
 int gx6702_clocks_init(void);
 int gx6702_ddr_init(void);
+#endif
+#if defined(SOC_GX6706) || defined(SOC_UNIVERSAL)
 int gx6706_clocks_init(void);
 int gx6706_ddr_init(void);
-
+#endif
 int ipl_pre_mmu(void);
 void ipl_post_mmu(void);
 

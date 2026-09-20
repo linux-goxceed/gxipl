@@ -45,6 +45,7 @@ static const u32 ddr_regs_0[155] = {
 	0x00000000u, 0x00000204u, 0x00000000u, 0x00000000u, 0x00000001u,
 };
 
+#if defined(SOC_GX6702) || defined(SOC_UNIVERSAL)
 static const u32 ddr_regs_100[26] = {
 	0x26272627u, 0x263a263au, 0x012100a0u, 0x00000048u, 0x43035603u, 0x00000000u,
 	0x26272627u, 0x263a263au, 0x012100a0u, 0x00000048u, 0x6b036b03u, 0x00000000u,
@@ -294,6 +295,8 @@ int gx6702_ddr_init(void)
 	ipl_crumb('N');
 	return 0;
 }
+
+#endif
 
 #ifndef SOC_UNIVERSAL
 __attribute__((used, externally_visible))

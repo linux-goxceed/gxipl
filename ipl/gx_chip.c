@@ -5,6 +5,8 @@
  * at the start of the raw window (see REVERSE_ENGINEERING.md).
  */
 
+/* ignore on non-universal builds */
+#ifdef SOC_UNIVERSAL
 #include "gx_hw.h"
 #include "gx_chip.h"
 
@@ -123,3 +125,4 @@ int gx_chip_probe(u32 name_base)
 	gx_detected_family = gx_family_from_raw(raw, gx_detected_name);
 	return gx_detected_family;
 }
+#endif
