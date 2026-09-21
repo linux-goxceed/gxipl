@@ -15,6 +15,7 @@ extern struct ipl_config g_ipl_cfg;
 extern int g_verbose;
 
 #if defined(SOC_GX6706)
+#ifndef VERBOSE_MINIFY
 static void gx6706_spi_dump_abs(const char *name, u32 address)
 {
 	bc_puts("SPIABS name=");
@@ -76,6 +77,7 @@ static void gx6706_spi_dump_regs(void)
 	bc_puts("SPI REGDUMP END\r\n");
 }
 #endif
+#endif
 
 static void cache_flush(void)
 {
@@ -87,9 +89,14 @@ static void cache_flush(void)
 void bc_jump(u32 entry)
 {
 	if (g_verbose) {
+                #ifdef VERBOSE_MINIFY
+		bc_puts("GOTO ");
+		bc_put_hex(entry);
+                #else
 		bc_puts("Jumping to ");
 		bc_put_hex(entry);
 		bc_puts("...\r\n");
+                #endif
 	}
 	cache_flush();
 	((void (*)(void))entry)();
@@ -97,6 +104,7 @@ void bc_jump(u32 entry)
 		;
 }
 
+#ifndef VERBOSE_MINIFY
 static void bc_put_part_size(u32 bytes)
 {
 	if (bytes >= 1024u && (bytes % 1024u) == 0) {
@@ -107,11 +115,17 @@ static void bc_put_part_size(u32 bytes)
 		bc_puts(" bytes");
 	}
 }
+#endif
 
 static void bc_announce_part(const struct gx_part *part)
 {
 	if (!g_verbose || !part)
 		return;
+        #ifdef VERBOSE_MINIFY
+	bc_puts("READ GXPART ");
+	bc_puts(part->name);
+	bc_puts("\r\n");
+        #else
 	bc_puts("Reading: ");
 	bc_puts(part->name);
 	bc_puts(" (GxLoader partition on ");
@@ -119,6 +133,7 @@ static void bc_announce_part(const struct gx_part *part)
 	bc_puts(", size ");
 	bc_put_part_size(part->total_size);
 	bc_puts(")\r\n");
+        #endif
 }
 
 static int peek_gxbc(u32 flash_off, u32 max_window, struct bootcode_hdr *hdr)
@@ -225,7 +240,12 @@ int bc_spi_load_uboot(void)
 				bc_puts("\r\n");
 			}
 		} else if (g_verbose) {
-			bc_puts("SPI JEDEC read failed rc=");
+                        #ifdef VERBOSE_MINIFY
+                        bc_puts("SPI JEDEC ERR");
+                        #else
+                        bc_puts("SPI JEDEC read failed rc=");
+                        #endif
+                        #ifndef VERBOSE_MINIFY
 			bc_put_hex((u32)ret);
 			bc_puts(" id=");
 			bc_put_hex(((u32)jedec[0] << 16) |
@@ -250,6 +270,7 @@ int bc_spi_load_uboot(void)
 			bc_puts("\r\n");
 #if defined(SOC_GX6706)
 			gx6706_spi_dump_regs();
+#endif
 #endif
 		}
 	}

@@ -48,6 +48,11 @@ LTO_CFLAGS  := -flto
 LTO_LDFLAGS := -flto -fuse-linker-plugin
 endif
 
+ifeq ($(VERBOSE_MINIFY),1)
+MINIFY_CFLAGS  := -DVERBOSE_MINIFY=1
+endif
+
+
 GIT_HASH := $(shell git rev-parse --short HEAD 2>/dev/null)
 ifeq ($(GIT_HASH),)
 IPL_VERSION_STR := $(IPL_VERSION_BASE)
@@ -60,7 +65,7 @@ CPPFLAGS := $(SOC_CPPFLAGS) \
 	-DIPL_CONFIG_VA=0x00101e00u
 CFLAGS := $(ARCHFLAGS) $(OPT) -std=c99 -ffreestanding -fno-builtin \
 	-fno-stack-protector -fomit-frame-pointer -nostdlib -Wall -Wextra \
-	-ffunction-sections -fdata-sections $(INCLUDES) $(CPPFLAGS) $(LTO_CFLAGS)
+	-ffunction-sections -fdata-sections $(INCLUDES) $(CPPFLAGS) $(LTO_CFLAGS) $(MINIFY_CFLAGS)
 
 LINKER_IPL := ld/linker-8k.ld
 LDFLAGS_IPL := -EL -nostdlib --gc-sections -T $(LINKER_IPL)
@@ -190,3 +195,22 @@ clean:
 		BOOT-flash-probe64.bin TABLE-flash-probe64.bin \
 		BOOT-flash-verbose64.bin TABLE-flash-verbose64.bin \
 		BOOT-flash-uboot.bin TABLE-flash-uboot.bin
+		
+help:
+	@echo "NationalChip IPL and bootcode config options:"
+	@echo "Build targets:"
+	@echo ""
+	@echo "bootcode - build GX bootcode target"
+	@echo "ipl - build GX IPL target"
+	@echo "flash-image - build GX IPL and bootcode into a flashable BOOT.bin and TABLE.bin for GX6702"
+	@echo "flash-probe64 - build GX IPL and SPI flash probe test into a flashable BOOT.bin and TABLE.bin for GX6702"
+	@echo "flash-uboot - build GX IPL and U-Boot into a flashable BOOT.bin and TABLE.bin for GX6702"
+	@echo "allinone - build GX IPL into a universal all in one image (meant for flashing utilities to detect device first)"
+	@echo "test - run GX unit tests"
+	@echo ""
+	@echo "Config options:"
+	@echo "SOC - configure type of SoC for IPL and bootcode build"
+	@echo "accepted options: gx6702, gx6706, universal (defaults to gx6702)"
+	@echo "LTO - enable link time optimization on IPL and bootcode build (defaults to 0)"
+	@echo "VERBOSE_MINIFY - minify verbose logging (saves ~2 KB, defaults to 0)"
+	

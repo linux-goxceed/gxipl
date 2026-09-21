@@ -55,10 +55,17 @@ static void bc_chip_name(void)
 		if (c < 0x20u || c > 0x7eu)
 			valid = 0;
 	}
-
-	bc_puts("chip name: ");
+        #ifdef VERBOSE_MINIFY
+	bc_puts("GXCHIP ");
+        #else
+	bc_puts("chip name: ");        
+        #endif
 	if (!valid) {
+                #ifdef VERBOSE_MINIFY
+		bc_puts("?");
+                #else
 		bc_puts("unavailable");
+                #endif
 	} else {
 		/* Reverse the field, omitting what becomes trailing NUL padding. */
 		for (i = 11; i >= first; i--)
@@ -72,9 +79,17 @@ static void bc_public_id(void)
 	u32 low = readl(GX_PUBLIC_ID_VIRT);
 	u32 high = readl(GX_PUBLIC_ID_VIRT + 4u);
 
-	bc_puts("public id: ");
+        #ifdef VERBOSE_MINIFY
+	bc_puts("GXID ");
+        #else
+	bc_puts("public id: ");        
+        #endif
 	if ((!low && !high) || (low == 0xffffffffu && high == 0xffffffffu)) {
+                #ifdef VERBOSE_MINIFY
+		bc_puts("?");
+                #else
 		bc_puts("unavailable");
+                #endif
 	} else {
 		/* Match the byte-reversed display order used by stock GxLoader. */
 		bc_put_hex_word(high);
@@ -111,7 +126,17 @@ void bc_banner(void)
 	if (!g_verbose)
 		return;
 	/* BootROM handshake (e.g. B0 B8 X) has no trailing newline. */
-	bc_puts("\r\nNationalChip GoXceed Bootcode\r\n");
+        #ifdef VERBOSE_MINIFY
+	bc_puts("\r\nGXBOOTCODE\r\n");
+	bc_puts("VER: ");
+	bc_puts(IPL_VERSION_STR);
+	bc_puts(" (");
+	bc_puts(IPL_CHIP);
+	bc_puts(")\r\n");
+	bc_chip_name();
+	bc_public_id();
+       #else
+       	bc_puts("\r\nNationalChip GoXceed Bootcode\r\n");
 	bc_puts("version: ");
 	bc_puts(IPL_VERSION_STR);
 	bc_puts(" (");
@@ -119,4 +144,5 @@ void bc_banner(void)
 	bc_puts(")\r\n");
 	bc_chip_name();
 	bc_public_id();
+       #endif
 }

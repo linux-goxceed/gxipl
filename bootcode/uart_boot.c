@@ -97,22 +97,30 @@ int bc_uart_load_uboot(void)
 
 	if (type != 0x00c2u || !size) {
 		if (g_verbose) {
+                        #ifdef VERBOSE_MINIFY
+			bc_puts("EBOOTINVALID\r\n");
+                        #else
 			bc_puts("Error: length error: boot image invalid");
 			bc_puts(" (type=");
 			bc_put_hex(type);
 			bc_puts(" size=");
 			bc_put_dec(size);
 			bc_puts(")\r\n");
+                        #endif
 		}
 		return -1;
 	}
 	if (size > UBOOT_MAX_SIZE) {
 		if (g_verbose) {
+                        #ifdef VERBOSE_MINIFY
+                        bc_puts("EMAXLENGTH\r\n");
+                        #else
 			bc_puts("Error: length error: boot image ");
 			bc_put_dec(size);
 			bc_puts(" exceeds the maximum allowed boot size ");
 			bc_put_dec(UBOOT_MAX_SIZE);
 			bc_puts("\r\n");
+                        #endif
 		}
 		return -1;
 	}
@@ -128,11 +136,15 @@ int bc_uart_load_uboot(void)
 	}
 	if (checksum != expected) {
 		if (g_verbose) {
+                        #ifdef VERBOSE_MINIFY
+                        bc_puts("ECHECKSUM\r\n");
+                        #else
 			bc_puts("Error: checksum error: expected ");
 			bc_put_hex(expected);
 			bc_puts(" but received ");
 			bc_put_hex(checksum);
 			bc_puts("\r\n");
+                        #endif
 		}
 		return -1;
 	}
@@ -141,13 +153,21 @@ int bc_uart_load_uboot(void)
 	return 0;
 
 timeout:
+        #ifdef VERBOSE_MINIFY
+        bc_puts("ETIMEOUT\r\n");
+        #else
 	bc_vputs("Timeout reached, bailing out.\r\n");
+        #endif
 	return -1;
 }
 
 void bc_halt(void)
 {
+        #ifdef VERBOSE_MINIFY
+        bc_puts("HALT\r\n");
+        #else
 	bc_vputs("Halting\r\n");
+        #endif
 	for (;;)
 		;
 }

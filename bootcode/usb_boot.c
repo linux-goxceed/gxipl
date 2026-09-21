@@ -99,17 +99,28 @@ int bc_usb_boot(void)
 	u32 len = 0;
 	u32 entry = 0;
 	FRESULT fr;
-
+        #ifdef VERBOSE_MINIFY
+	bc_vputs("USBBOOT\r\n");
+        #else
 	bc_vputs("Attempting to boot from USB...\r\n");
+        #endif
 
 	if (usb_msc_init()) {
+                #ifdef VERBOSE_MINIFY
+		bc_vputs("ENOUSB\r\nSPIBOOT\r\n");
+                #else
 		bc_vputs("No USB device detected, trying SPI...\r\n");
+                #endif
 		return -1;
 	}
 
 	fr = f_mount(&fs, "", 1);
 	if (fr != FR_OK) {
-		bc_vputs("No USB device detected, trying SPI...\r\n");
+                #ifdef VERBOSE_MINIFY
+		bc_vputs("EUSBMNT\r\nSPIBOOT\r\n");
+                #else
+		bc_vputs("Could not mount USB device, trying SPI...\r\n");
+                #endif
 		return -1;
 	}
 
@@ -136,7 +147,9 @@ int bc_usb_boot(void)
 	}
 
 	{
+	        #ifndef VERBOSE_MINIFY
 		u32 cfg_sz = 0;
+		#endif
 		u8 tmp[1];
 		UINT br;
 
@@ -144,28 +157,43 @@ int bc_usb_boot(void)
 			for (;;) {
 				if (f_read(&fil, tmp, 1, &br) != FR_OK || br == 0)
 					break;
+				#ifndef VERBOSE_MINIFY
 				cfg_sz++;
+				#endif
 			}
 			f_close(&fil);
 		}
 		if (g_verbose) {
+                        #ifdef VERBOSE_MINIFY
+			bc_puts("READ config.txt");
+                        #else
 			bc_puts("Reading: config.txt, ");
 			bc_put_dec(cfg_sz);
 			bc_puts("\r\n");
+                        #endif
 		}
 	}
 
 	if (read_file_to(start_file, dst, ELF_MAX, &len)) {
-		bc_vputs("No USB device detected, trying SPI...\r\n");
+                #ifdef VERBOSE_MINIFY
+		bc_vputs("EELFREAD\r\nSPIBOOT\r\n");
+                #else
+		bc_vputs("Could not read ELF file from USB, trying SPI...\r\n");
+                #endif
 		f_mount(0, "", 0);
 		return -1;
 	}
 	if (g_verbose) {
+                #ifdef VERBOSE_MINIFY
+		bc_puts("READ ");
+		bc_puts(start_file);
+                #else
 		bc_puts("Reading: ");
 		bc_puts(start_file);
 		bc_puts(", ");
 		bc_put_dec(len);
 		bc_puts(" (bytes)\r\n");
+                #endif
 	}
 
 	if (bc_elf_load(dst, len, &entry)) {
