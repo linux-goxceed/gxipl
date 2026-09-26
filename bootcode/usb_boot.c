@@ -20,8 +20,16 @@ static int read_file_to(const char *path, u8 *dst, u32 max, u32 *out_len)
 	u32 total = 0;
 
 	fr = f_open(&fil, path, FA_READ);
-	if (fr != FR_OK)
+	if (fr != FR_OK) {
+		if (g_verbose) {
+			bc_puts("USBERR OPEN ");
+			bc_puts(path);
+			bc_puts("=");
+			bc_put_dec((u32)fr);
+			bc_puts("\r\n");
+		}
 		return -1;
+	}
 	while (total < max) {
 		UINT chunk = (max - total > 4096u) ? 4096u : (UINT)(max - total);
 
@@ -99,6 +107,7 @@ int bc_usb_boot(void)
 	u32 len = 0;
 	u32 entry = 0;
 	FRESULT fr;
+	int default_file = 0;
         #ifdef VERBOSE_MINIFY
 	bc_vputs("USBBOOT\r\n");
         #else
@@ -116,6 +125,11 @@ int bc_usb_boot(void)
 
 	fr = f_mount(&fs, "", 1);
 	if (fr != FR_OK) {
+		if (g_verbose) {
+			bc_puts("USBERR FAT mount=");
+			bc_put_dec((u32)fr);
+			bc_puts("\r\n");
+		}
                 #ifdef VERBOSE_MINIFY
 		bc_vputs("EUSBMNT\r\nSPIBOOT\r\n");
                 #else
@@ -125,6 +139,7 @@ int bc_usb_boot(void)
 	}
 
 	if (parse_start_file(start_file, sizeof(start_file))) {
+		default_file = 1;
 		start_file[0] = 's';
 		start_file[1] = 't';
 		start_file[2] = 'a';
@@ -144,6 +159,11 @@ int bc_usb_boot(void)
 		start_file[11] = 'l';
 		start_file[12] = 'f';
 		start_file[13] = 0;
+	}
+	if (g_verbose) {
+		bc_puts("USBFILE ");
+		bc_puts(start_file);
+		bc_puts("\r\n");
 	}
 
 	{
@@ -175,6 +195,22 @@ int bc_usb_boot(void)
 	}
 
 	if (read_file_to(start_file, dst, ELF_MAX, &len)) {
+		/* Keep a short-name fallback for FAT volumes without usable LFN data. */
+		if (default_file && start_file[0] == 's' && start_file[1] == 't' &&
+		    start_file[5] == '6' && start_file[9] == '.') {
+			start_file[5] = '.';
+			start_file[6] = 'e';
+			start_file[7] = 'l';
+			start_file[8] = 'f';
+			start_file[9] = 0;
+			if (g_verbose) {
+				bc_puts("USBFILE fallback ");
+				bc_puts(start_file);
+				bc_puts("\r\n");
+			}
+			if (!read_file_to(start_file, dst, ELF_MAX, &len))
+				goto elf_loaded;
+		}
                 #ifdef VERBOSE_MINIFY
 		bc_vputs("EELFREAD\r\nSPIBOOT\r\n");
                 #else
@@ -183,6 +219,8 @@ int bc_usb_boot(void)
 		f_mount(0, "", 0);
 		return -1;
 	}
+
+elf_loaded:
 	if (g_verbose) {
                 #ifdef VERBOSE_MINIFY
 		bc_puts("READ ");

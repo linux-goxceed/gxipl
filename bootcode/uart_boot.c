@@ -4,6 +4,9 @@
 #include "print.h"
 #include "boot.h"
 
+#define UART_HELO "HELO"
+#define UART_HELO_ACK "OKAY"
+
 extern struct ipl_config g_ipl_cfg;
 extern int g_verbose;
 
@@ -71,6 +74,8 @@ int bc_uart_load_uboot(void)
 	u32 iters = timeout_s * ITERS_PER_SEC;
 	u32 expected, type, size, checksum, i;
 	int timed_out;
+	u8 prefix[4];
+	u32 prefix_value;
 	u8 *dst = (u8 *)UBOOT_ENTRY;
 
 	/*
@@ -85,12 +90,31 @@ int bc_uart_load_uboot(void)
 	else
 		bc_puts("GET");
 
-	expected = read_u16_to(iters, &timed_out);
-	if (timed_out)
-		goto timeout;
-	type = read_u16_to(iters, &timed_out);
-	if (timed_out)
-		goto timeout;
+	/* Probe before the binary envelope while preserving legacy uploads. */
+	for (i = 0; i < sizeof(prefix); i++) {
+		prefix[i] = uart_getc_to(iters, &timed_out);
+		if (timed_out)
+			goto timeout;
+	}
+	if (prefix[0] == UART_HELO[0] && prefix[1] == UART_HELO[1] &&
+	    prefix[2] == UART_HELO[2] && prefix[3] == UART_HELO[3]) {
+		bc_puts(UART_HELO_ACK);
+		/* A successful probe starts a fresh payload timeout window. */
+		iters = timeout_s * ITERS_PER_SEC;
+		expected = read_u16_to(iters, &timed_out);
+		if (timed_out)
+			goto timeout;
+		type = read_u16_to(iters, &timed_out);
+		if (timed_out)
+			goto timeout;
+	} else {
+		prefix_value = (u32)prefix[0] |
+			((u32)prefix[1] << 8) |
+			((u32)prefix[2] << 16) |
+			((u32)prefix[3] << 24);
+		expected = prefix_value & 0xffffu;
+		type = (prefix_value >> 16) & 0xffffu;
+	}
 	size = read_u32_to(iters, &timed_out);
 	if (timed_out)
 		goto timeout;

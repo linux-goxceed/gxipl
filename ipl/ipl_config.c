@@ -24,6 +24,12 @@ static u16 cfg_crc(const u8 *p)
 	return (u16)(sum & 0xffffu);
 }
 
+int ipl_config_valid(const struct ipl_config *cfg)
+{
+	return cfg->magic == IPL_CONFIG_MAGIC && cfg->version == 1 &&
+	       cfg->crc == cfg_crc((const u8 *)cfg);
+}
+
 void ipl_config_defaults(struct ipl_config *cfg)
 {
 	u32 i;
@@ -47,8 +53,7 @@ int ipl_config_load(struct ipl_config *out)
 	u32 i;
 	const u8 *p = (const u8 *)src;
 
-	if (src->magic != IPL_CONFIG_MAGIC || src->version != 1 ||
-	    src->crc != cfg_crc(p)) {
+	if (!ipl_config_valid(src)) {
 		ipl_config_defaults(out);
 		return -1;
 	}
@@ -61,8 +66,7 @@ int ipl_config_verbose_early(void)
 {
 	const struct ipl_config *src = (const struct ipl_config *)IPL_CONFIG_VA;
 
-	if (src->magic != IPL_CONFIG_MAGIC || src->version != 1 ||
-	    src->crc != cfg_crc((const u8 *)src))
+	if (!ipl_config_valid(src))
 		return (IPL_CFG_DEFAULT_FLAGS & IPL_CFG_VERBOSE) ? 1 : 0;
 	return (src->flags & IPL_CFG_VERBOSE) ? 1 : 0;
 }

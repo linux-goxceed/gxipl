@@ -73,6 +73,35 @@ make SOC=universal allinone
 make test
 ```
 
+### Stage-1 size knobs
+
+The IPL must fit the 7680-byte code window (8 KiB body minus the 512-byte
+config at `0x1e00`), enforced by an `ASSERT` in `ld/linker-8k.ld`. Two knobs
+control how much of the optional functionality is compiled in:
+
+```sh
+# Default: LTO on, minimal stage-1 (3690 B on GX6702, 4378 B on GX6706)
+make SOC=gx6702 ipl
+
+# Full feature set: adds the GXUB bundle receive path and the legacy
+# bring-up-uploader checksum fallback (3914 B / 4610 B)
+make SOC=gx6702 IPL_MIN=0 ipl
+
+# Disable link-time optimization (larger, easier to correlate with .dis)
+make SOC=gx6702 LTO=0 ipl
+```
+
+`IPL_MIN=1` (the default) drops only two things from the UART loader: the
+`GXUB` U-Boot bundle record appended to an IPL container, and the old
+`expected >> 16 == 0x00c2` checksum fallback used by the bring-up uploader.
+The SPI `GXBC` boot path, plain `RUNGET` bootcode/raw U-Boot receive, and every
+protocol string (`RUNGET`, `EMETA`, `ECHK`, `OK`, `EBC`, `EBCCHK`, `EPLL`,
+`EDDR`) are byte-identical in both modes. `EBUNDLE`/`EBUNDLECHK` are emitted
+only by `IPL_MIN=0` builds.
+
+Each build also writes `<soc>-ipl.elf.map` so section and symbol sizes can be
+inspected directly.
+
 The GX6706 build produces:
 
 ```text

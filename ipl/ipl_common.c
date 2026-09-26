@@ -31,6 +31,12 @@ int wait_value(u32 addr, u32 mask, u32 value)
 	return -1;
 }
 
+/*
+ * noinline: set_field is called from apply_patches, both eFuse trim loops and
+ * several DDR-init sites.  LTO inlines it into every caller; keeping one
+ * out-of-line copy is ~16-20 bytes smaller per SoC.
+ */
+__attribute__((noinline))
 void set_field(u32 addr, u8 shift, u8 width, u32 value)
 {
 	u32 mask;
@@ -94,48 +100,62 @@ void pll_program(u32 addr, u32 value)
 	writel(value, addr);
 }
 
-void apply_patches(const struct field_patch *patches, u32 count)
+void apply_patches(const u32 *patches, u32 count)
 {
 	u32 i;
 
-	for (i = 0; i < count; i++)
-		set_field(DDR_BASE + ((u32)patches[i].reg << 2),
-			  patches[i].shift, patches[i].width,
-			  patches[i].value);
+	for (i = 0; i < count; i++) {
+		u32 p = patches[i];
+
+		set_field(DDR_BASE + (FP_REG(p) << 2),
+			  FP_SHIFT(p), FP_WIDTH(p), FP_VALUE(p));
+	}
 }
 
-int efuse_read(u32 address, u8 *value)
+#ifndef SOC_UNIVERSAL
+/*
+ * Decode an RLE register stream (see utils/gen_ddr_rle.py) straight into
+ * the DDR controller window.  Token tags:
+ *   0x00-0x7F LIT32 (tag+1 LE u32 words)   0x80-0x9F ZERO run
+ *   0xA0-0xBF REPEAT (next byte = back-ref 1..16, LZ77-style with overlap)
+ * Literal words are assembled byte-by-byte: CK610 unaligned-load behaviour
+ * is not guaranteed, and the stream is byte-packed after each 1-byte tag.
+ */
+void ddr_apply_rle(const u8 *p, u32 reg_base, u32 count)
 {
-	u32 count;
-	u32 cmd;
+	u32 hist[16];
+	u32 hn = 0;
+	u32 reg = reg_base;
 
-	for (count = 0; count < WAIT_LIMIT; count++) {
-		if (readl(EFUSE_STATUS) & BIT(10))
-			break;
-	}
-	if (count == WAIT_LIMIT)
-		return -1;
-	for (count = 0; count < WAIT_LIMIT; count++) {
-		if (!(readl(EFUSE_STATUS) & BIT(8)))
-			break;
-	}
-	if (count == WAIT_LIMIT)
-		return -1;
+	while (hn < count) {
+		u32 tag = *p++;
+		u32 n;
+		u32 back = 0;
 
-	cmd = ((address & 0x7ffu) << 3) | BIT(14);
-	writel(cmd, EFUSE_CMD);
-	delay(100);
-	writel(cmd & ~BIT(14), EFUSE_CMD);
-	for (count = 0; count < WAIT_LIMIT; count++) {
-		if (readl(EFUSE_STATUS) & BIT(9)) {
-			*value = (u8)readl(EFUSE_STATUS);
-			writel(0, EFUSE_CMD);
-			return 0;
+		if (tag < 0x80u) {
+			n = tag + 1u;
+		} else {
+			n = (tag & 0x1fu) + 1u;
+			if (tag >= 0xa0u)
+				back = *p++;
 		}
+
+		do {
+			u32 v = 0;
+
+			if (tag < 0x80u) {
+				v = (u32)p[0] | ((u32)p[1] << 8) |
+				    ((u32)p[2] << 16) | ((u32)p[3] << 24);
+				p += 4;
+			} else if (back) {
+				v = hist[(hn - back) & 15u];
+			}
+			writel(v, DDR_BASE + (reg++ << 2));
+			hist[hn++ & 15u] = v;
+		} while (--n);
 	}
-	writel(0, EFUSE_CMD);
-	return -1;
 }
+#endif
 
 static u32 read_u32(u32 uart)
 {
@@ -166,12 +186,23 @@ static void cache_writeback_invalidate_all(void)
 	__asm__ __volatile__("mtcr %0, cr17\n\tidly4" : : "r"(op) : "memory");
 }
 
+/*
+ * Both call sites pass 4-byte-aligned SRAM/DDR buffers, so copy whole words
+ * and only mop up a 0-3 byte tail.  Faster and smaller than a byte loop.
+ */
 static void copy_mem(u8 *dst, const u8 *src, u32 n)
 {
-	u32 i;
+	u32 *d32 = (u32 *)dst;
+	const u32 *s32 = (const u32 *)src;
 
-	for (i = 0; i < n; i++)
-		dst[i] = src[i];
+	while (n >= 4u) {
+		*d32++ = *s32++;
+		n -= 4u;
+	}
+	dst = (u8 *)d32;
+	src = (const u8 *)s32;
+	while (n--)
+		*dst++ = *src++;
 }
 
 static int uart_recv_image(u8 *destination, u32 max_size, u32 *out_size)
@@ -202,6 +233,7 @@ static int uart_recv_image(u8 *destination, u32 max_size, u32 *out_size)
 		destination[i] = byte;
 		checksum += byte;
 	}
+#ifndef IPL_MINIMAL
 	/* Retain compatibility with the bring-up uploader's old metadata. */
 	if (checksum != expected &&
 	    !((expected >> 16) == 0x00c2u &&
@@ -209,6 +241,12 @@ static int uart_recv_image(u8 *destination, u32 max_size, u32 *out_size)
 		uart_puts_at(UART_VIRT, "\r\nECHK\r\n");
 		return -1;
 	}
+#else
+	if (checksum != expected) {
+		uart_puts_at(UART_VIRT, "\r\nECHK\r\n");
+		return -1;
+	}
+#endif
 	*out_size = size;
 	uart_puts_at(UART_VIRT, "\r\nOK\r\n");
 	return 0;
@@ -223,11 +261,10 @@ static void jump_to(u32 entry)
 }
 
 #ifndef SOC_UNIVERSAL
-static int try_spi_bootcode(const struct ipl_config *cfg)
+static int try_spi_bootcode(u32 cfg_off)
 {
 	struct bootcode_hdr hdr;
-	u32 off = cfg->bootcode_flash_off ?
-		cfg->bootcode_flash_off : FLASH_BOOTCODE_OFF;
+	u32 off = cfg_off ? cfg_off : FLASH_BOOTCODE_OFF;
 	u32 sum;
 	u32 i;
 	u8 *dst = (u8 *)BOOTCODE_ENTRY;
@@ -253,36 +290,41 @@ static int try_spi_bootcode(const struct ipl_config *cfg)
 static void run_uart_payload(u8 *buf, u32 size)
 {
 	const struct bootcode_hdr *hdr = (const struct bootcode_hdr *)buf;
-	const struct uboot_bundle_hdr *bundle;
-	const u8 *payload;
 	u32 i;
 	u32 sum;
 
-	/* A normal uploader can append a GXUB record to an IPL container. */
-	if (size >= 4u + 0x2000u + sizeof(*bundle) &&
-	    buf[0] == 't' && buf[1] == 'o' &&
-	    buf[2] == 'o' && buf[3] == 'b') {
-		bundle = (const struct uboot_bundle_hdr *)(buf + 4u + 0x2000u);
-		payload = (const u8 *)(bundle + 1);
-		if (bundle->magic != UBOOT_BUNDLE_MAGIC ||
-		    !bundle->size || bundle->size > UBOOT_MAX_SIZE ||
-		    bundle->entry != UBOOT_ENTRY ||
-		    bundle->size > size - (4u + 0x2000u + sizeof(*bundle))) {
-			uart_puts_at(UART_VIRT, "\r\nEBUNDLE\r\n");
-			for (;;)
-				;
+#ifndef IPL_MINIMAL
+	{
+		const struct uboot_bundle_hdr *bundle;
+		const u8 *payload;
+
+		/* A normal uploader can append a GXUB record to an IPL container. */
+		if (size >= 4u + 0x2000u + sizeof(*bundle) &&
+		    buf[0] == 't' && buf[1] == 'o' &&
+		    buf[2] == 'o' && buf[3] == 'b') {
+			bundle = (const struct uboot_bundle_hdr *)(buf + 4u + 0x2000u);
+			payload = (const u8 *)(bundle + 1);
+			if (bundle->magic != UBOOT_BUNDLE_MAGIC ||
+			    !bundle->size || bundle->size > UBOOT_MAX_SIZE ||
+			    bundle->entry != UBOOT_ENTRY ||
+			    bundle->size > size - (4u + 0x2000u + sizeof(*bundle))) {
+				uart_puts_at(UART_VIRT, "\r\nEBUNDLE\r\n");
+				for (;;)
+					;
+			}
+			sum = 0;
+			for (i = 0; i < bundle->size; i++)
+				sum += payload[i];
+			if (sum != bundle->checksum) {
+				uart_puts_at(UART_VIRT, "\r\nEBUNDLECHK\r\n");
+				for (;;)
+					;
+			}
+			copy_mem((u8 *)UBOOT_ENTRY, payload, bundle->size);
+			jump_to(UBOOT_ENTRY);
 		}
-		sum = 0;
-		for (i = 0; i < bundle->size; i++)
-			sum += payload[i];
-		if (sum != bundle->checksum) {
-			uart_puts_at(UART_VIRT, "\r\nEBUNDLECHK\r\n");
-			for (;;)
-				;
-		}
-		copy_mem((u8 *)UBOOT_ENTRY, payload, bundle->size);
-		jump_to(UBOOT_ENTRY);
 	}
+#endif
 
 	if (size >= sizeof(*hdr) && hdr->magic == BOOTCODE_MAGIC) {
 		if (hdr->size + sizeof(*hdr) > size ||
@@ -312,14 +354,24 @@ static void run_uart_payload(u8 *buf, u32 size)
 __attribute__((used, externally_visible))
 void ipl_post_mmu(void)
 {
-	struct ipl_config cfg;
+	const struct ipl_config *cfg = (const struct ipl_config *)IPL_CONFIG_VA;
+	u32 flags = IPL_CFG_DEFAULT_FLAGS;
+	u32 bootcode_off = FLASH_BOOTCODE_OFF;
 	u32 size;
 
-	ipl_config_load(&cfg);
-	if (cfg.flags & IPL_CFG_UART_DIRECT)
+	/*
+	 * Read the SRAM config in place instead of copying 512 bytes to the
+	 * stack.  An invalid blob falls back to the compiled-in defaults;
+	 * only the two fields the IPL consumes are ever fetched.
+	 */
+	if (ipl_config_valid(cfg)) {
+		flags = cfg->flags;
+		bootcode_off = cfg->bootcode_flash_off;
+	}
+	if (flags & IPL_CFG_UART_DIRECT)
 		goto uart_load;
 #ifndef SOC_UNIVERSAL
-	if (!(cfg.flags & IPL_CFG_SKIP_SPI) && try_spi_bootcode(&cfg) == 0)
+	if (!(flags & IPL_CFG_SKIP_SPI) && try_spi_bootcode(bootcode_off) == 0)
 		return;
 #endif
 

@@ -10,3 +10,4 @@ BOOT*.bin
 *.boot
 TABLE*.bin
 __pycache__/
+samples/usb-hello/*.elf

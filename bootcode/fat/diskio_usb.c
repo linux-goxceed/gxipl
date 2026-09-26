@@ -16,6 +16,8 @@ DSTATUS disk_status(BYTE pdrv)
 DSTATUS disk_initialize(BYTE pdrv)
 {
 	(void)pdrv;
+	if (usb_msc_present())
+		return 0;
 	if (usb_msc_init())
 		return STA_NOINIT;
 	return 0;

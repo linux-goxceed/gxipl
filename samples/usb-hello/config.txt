@@ -1,0 +1,2 @@
+[gx]
+start_file=start6706.elf

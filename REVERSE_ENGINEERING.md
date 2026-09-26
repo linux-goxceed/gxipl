@@ -56,8 +56,29 @@ at `0x001000d8` produced a working loader but was not an open IPL.
 
 The DDR controller profile consists of registers `0x000..0x268`, registers
 `0x400..0x464`, two source-level field-patch lists, and 29 optional eFuse trim
-descriptors. Keeping these as typed data makes individual GPIO/clock/DDR
-assumptions inspectable and changeable without copying vendor instructions.
+descriptors. The canonical readable form of every one of these lives in the IPL
+C sources (`ipl/ipl.c`, `ipl/gx6706_ipl.c`) so individual GPIO/clock/DDR
+assumptions stay inspectable and changeable without copying vendor instructions.
+
+To fit the 8 KiB stage-1 window with room for later bootcode features, the
+compiled image uses size-golfed encodings of that same data, all derived from
+the readable source and verified by `tests/`:
+
+- Field-patch and eFuse-trim entries are packed into one `u32` each by the
+  `FP()`/`ET()` macros in `include/ipl_internal.h` instead of 6/8-byte structs.
+  The macro arguments remain the readable `(reg, shift, width, value)` form.
+- The two DDR register windows are RLE-compressed by `utils/gen_ddr_rle.py`
+  into `build/<soc>/ddr_rle.h` at build time and decoded straight into the
+  controller by `ddr_apply_rle()`. The generator parses the canonical literals
+  in the C sources and `tests/test_ddr_rle.py` asserts the decoded stream is
+  byte-identical to them, so the tables cannot silently drift.
+- The `SOC=universal` build keeps the uncompressed arrays because it shares
+  `ddr_regs_0` between the Gemini and Cygnus paths.
+
+With `LTO=1` (default) and `IPL_MIN=1` (default) the stage-1 body is 3690 bytes
+on GX6702 and 4378 bytes on GX6706, inside the 7680-byte window enforced by
+`ld/linker-8k.ld`. `IPL_MIN=0` restores the GXUB bundle receive path and the
+legacy bring-up-uploader checksum fallback (3914 / 4610 bytes).
 
 The CK610 coprocessor/MMU sequence in `start.S` is intentionally kept in
 assembly. It matches the working mapping exactly: IPL SRAM remains executable,
@@ -158,6 +179,84 @@ PLL output `0x0011102d`, 15 clock-route descriptors, 10 system-register field
 descriptors, pad controls at `SYS+0x1b0/+0x200`, PHY trim writes at
 `0xa0702018/0xa0702418`, configuration at `0xa090a000`, and EHCI at
 `0xa0904000`.
+
+#### Where the USB tables actually come from
+
+The transcription source is **`libre-gxdl/loaders/cygnus-6706S5-sflash-24M.boot`**,
+which is a complete working GX6706 GxLoader (stage-1 + stage-2) — not
+`re-boot/extracted_partitions/BOOT-128k-gx6706.bin`. That file is
+`0x0000..0x1fff` stage-1 followed by stage-2 from `0x2000`; the stage-2 image
+runs at `0x93ce6400`, so `file_offset = runtime - 0x93ce6400`.
+
+The USB tables are stage-2 data, not code, and the loop helpers that consume
+them are the real specification:
+
+| table | runtime address | file offset | count × stride |
+| --- | --- | --- | --- |
+| clock route | `0x93d00aac` | `0x1a6ac` | 15 × 12 B |
+| field patch | `0x93d00b60` | `0x1a760` | 10 × 24 B |
+
+| record | size | layout |
+| --- | --- | --- |
+| clock route | 12 B | `[u8 index][u8 gate][u16 pad][u32 value][u32 gate_mask]` |
+| field patch | 24 B | `[u8 target][u8 gate][u16 pad][u32 clear][u32 first][u32 second][u32 value][u32 gate_mask]` |
+
+A route record with `index == 0` is skipped. Otherwise the register is
+`0xa0600ffc + index*4`, written as `value|BIT(30)` and then
+`value|BIT(30)|BIT(31)`, and `gate_mask` is OR-ed into the gate register
+(`gate` 1 → `0xa030a170`, 2 → `0xa030a174`). A field record patches target
+`0xa030a024` / `0xa030a178` / `0xa030a17c` for `target` 1 / 2 / 3 as
+`(reg & ~clear) | value | second`, then re-writes with `| first`.
+
+#### Route table bug found on hardware (fixed)
+
+Route index 8 had been transcribed as `0x09245fd9`. The real value is
+**`0x09249249`** — the plain 1/7-stride pattern its neighbours also use
+(`0x05555555`, `0x0ccccccc`, `0x05d1745d`). The stray bits left that clock
+route mis-muxed, so EHCI never completed a transfer: the async qTD stayed
+`Active` with the error counter saturated and `USBSTS` reported AAE. Removing
+the value also removed the `if (r->index == 8)` special case that had been
+OR-ing bits 6/7 into `0xa030a174` to compensate.
+
+The other 14 route records and all 10 field records were re-checked against
+the vendor loader and match byte-exact. `cygnus_usb_clocks()` is now a
+faithful transcription, including the trailing gate OR-lists
+(`0xa030a170`: `0x07000000|BIT(30)|BIT(23)|0x300001e0|0x00070000`;
+`0xa030a174`: `BIT(1)|BIT(2)|BIT(14)|0x1f800000|BIT(4)`).
+
+**Verified on real GX6706 hardware:** with only this correction the loader
+enumerates the stick, mounts FAT, reads `config.txt` and `start.elf`, and
+jumps to the loaded ELF.
+
+#### EHCI notes: do not derive endpoint speed from PORTSC
+
+`PORTSC` bit 2 (PED) being set does **not** prove the high-speed chirp
+succeeded — a full-speed device also gets PED. And `PORTSC` bits 27:26 (PSPD)
+is not usable on this part: it reads `0` (full speed) even when the link is
+genuinely high-speed. A high-speed stick is identifiable from its descriptor
+instead, since a 512-byte bulk `wMaxPacketSize` is legal only at high speed.
+
+Forcing the QH `Endpt1` EPS field from PSPD makes the device reject the very
+first 8-byte SETUP with `XACT_ERR` and breaks `SET_ADDRESS`. The QH speed field
+stays hardcoded high-speed, as U-Boot's `ehci_encode_speed()` would report for
+a high-speed device.
+
+The `USBERR BOT CSW status=1` line in verbose logs is expected: it is the soft
+`TEST UNIT READY` probe, a zero-length SCSI command with no data stage, whose
+return value `usb_msc_init()` deliberately ignores.
+
+#### Disassembling CK610 binaries
+
+`objdump -m csky` defaults to cskyv2 and emits garbage for these images, and
+`-m csky:ck610` on a raw binary aborts. Wrap the image in an ELF and set the
+architecture flags first:
+
+```sh
+csky-linux-objcopy -I binary -O elf32-csky-little \
+  --set-section-flags .data=alloc,load,readonly,code in.bin out.elf
+# patch e_flags at 0x24 to 0x11000002
+csky-linux-objdump -d out.elf
+```
 
 The vendor stage-1 jumps to the stage-2 image at `0x93ce6400`. Basing that
 image at `0x93ce0d30` (the first address seen in an earlier bad import) shifts

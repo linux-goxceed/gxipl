@@ -130,5 +130,40 @@ class Stage1LayoutTests(unittest.TestCase):
         self.assertEqual(marker, b"boot")
 
 
+class BootcodeHandshakeTests(unittest.TestCase):
+    def test_payload_stage2_probes_before_metadata(self) -> None:
+        class FakeSerial:
+            def __init__(self):
+                self.writes = []
+                self.flushes = 0
+                self.ack_offset = 0
+
+            def write(self, data):
+                self.writes.append(bytes(data))
+                return len(data)
+
+            def flush(self):
+                self.flushes += 1
+
+            def read(self, size):
+                if size < 1:
+                    raise AssertionError(f"unexpected read size: {size}")
+                byte = libre_gxdl.UART_HELO_ACK[self.ack_offset:self.ack_offset + 1]
+                self.ack_offset += len(byte)
+                return byte
+
+        uploader = libre_gxdl.GXUploader("/dev/null")
+        serial = FakeSerial()
+        uploader.ser = serial
+        payload = b"bootcode"
+
+        self.assertTrue(uploader.send_payload_stage2(payload))
+        self.assertEqual(serial.writes[0], libre_gxdl.UART_HELO)
+        self.assertEqual(serial.writes[1], struct.pack("<I", sum(payload)))
+        self.assertEqual(serial.writes[2], struct.pack("<I", len(payload)))
+        self.assertEqual(b"".join(serial.writes[3:]), payload)
+        self.assertGreaterEqual(serial.flushes, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

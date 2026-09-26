@@ -13,10 +13,14 @@
 #include "ipl_internal.h"
 
 #ifdef SOC_UNIVERSAL
+/*
+ * The universal build keeps the canonical readable tables because it shares
+ * ddr_regs_0 with the GX6706 path.  Per-SoC builds compile these arrays out
+ * and instead include the RLE stream that utils/gen_ddr_rle.py generates
+ * from this same text (the generator parses the literals below regardless of
+ * which preprocessor branch is active).
+ */
 const u32 ddr_regs_0[155] = {
-#else
-static const u32 ddr_regs_0[155] = {
-#endif
 	0x00000400u, 0x00000000u, 0x000208d5u, 0x00000085u, 0x0000014du, 0x02081202u,
 	0x1e270702u, 0x05050a05u, 0x00b64b08u, 0x00000505u, 0x0a0a0101u, 0x0000c814u,
 	0x010b1e03u, 0x0000000au, 0x00570100u, 0x00000a28u, 0x00120004u, 0x000a0005u,
@@ -44,8 +48,10 @@ static const u32 ddr_regs_0[155] = {
 	0x13070303u, 0x0000000fu, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
 	0x00000000u, 0x00000204u, 0x00000000u, 0x00000000u, 0x00000001u,
 };
+#endif
 
 #if defined(SOC_GX6702) || defined(SOC_UNIVERSAL)
+#ifdef SOC_UNIVERSAL
 static const u32 ddr_regs_100[26] = {
 	0x26272627u, 0x263a263au, 0x012100a0u, 0x00000048u, 0x43035603u, 0x00000000u,
 	0x26272627u, 0x263a263au, 0x012100a0u, 0x00000048u, 0x6b036b03u, 0x00000000u,
@@ -53,59 +59,62 @@ static const u32 ddr_regs_100[26] = {
 	0x26272627u, 0x263a263au, 0x012100a0u, 0x0000006du, 0x6b036b03u, 0x00000000u,
 	0x00004005u, 0x00000000u,
 };
+#else
+#include "ddr_rle.h"
+#endif
 
-static const struct field_patch ddr_fields_0[] = {
-	{ 0x4a,  0,  1, 0x0001 }, { 0x4d, 24,  1, 0x0001 },
-	{ 0x95,  8,  1, 0x0001 }, { 0x5f, 16, 16, 0xffff },
-	{ 0x61,  0, 16, 0xffff }, { 0x62,  8, 16, 0xffff },
-	{ 0x63, 16, 16, 0xffff }, { 0x65,  0, 16, 0xffff },
-	{ 0x66,  8, 16, 0xffff }, { 0x67, 16, 16, 0xffff },
-	{ 0x69,  0, 16, 0xffff }, { 0x6a,  8, 16, 0xffff },
-	{ 0x6b, 16, 16, 0xffff }, { 0x6d,  0, 16, 0xffff },
-	{ 0x6e,  8, 16, 0xffff }, { 0x6f, 16, 16, 0xffff },
-	{ 0x71,  0, 16, 0xffff }, { 0x72,  8, 16, 0xffff },
-	{ 0x73, 16, 16, 0xffff }, { 0x60,  0,  4, 0x0005 },
-	{ 0x61, 16,  4, 0x0006 }, { 0x62, 24,  4, 0x0009 },
-	{ 0x64,  0,  4, 0x0008 }, { 0x65, 16,  4, 0x0008 },
-	{ 0x66, 24,  4, 0x0004 }, { 0x68,  0,  4, 0x0003 },
-	{ 0x69, 16,  4, 0x0008 }, { 0x6a, 24,  4, 0x0003 },
-	{ 0x6c,  0,  4, 0x0005 }, { 0x6d, 16,  4, 0x0003 },
-	{ 0x6e, 24,  4, 0x0008 }, { 0x70,  0,  4, 0x0008 },
-	{ 0x71, 16,  4, 0x0008 }, { 0x72, 24,  4, 0x0008 },
-	{ 0x74,  0,  4, 0x0008 }, { 0x60,  8,  4, 0x0005 },
-	{ 0x61, 24,  4, 0x0006 }, { 0x63,  0,  4, 0x0009 },
-	{ 0x64,  8,  4, 0x0008 }, { 0x65, 24,  4, 0x0008 },
-	{ 0x67,  0,  4, 0x0004 }, { 0x68,  8,  4, 0x0003 },
-	{ 0x69, 24,  4, 0x0008 }, { 0x6b,  0,  4, 0x0003 },
-	{ 0x6c,  8,  4, 0x0005 }, { 0x6d, 24,  4, 0x0003 },
-	{ 0x6f,  0,  4, 0x0008 }, { 0x70,  8,  4, 0x0008 },
-	{ 0x71, 24,  4, 0x0008 }, { 0x73,  0,  4, 0x0008 },
-	{ 0x74,  8,  4, 0x0008 }, { 0x2b, 16,  1, 0x0000 },
+static const u32 ddr_fields_0[] = {
+	FP(0x4a,  0,  1, 0x0001), FP(0x4d, 24,  1, 0x0001),
+	FP(0x95,  8,  1, 0x0001), FP(0x5f, 16, 16, 0xffff),
+	FP(0x61,  0, 16, 0xffff), FP(0x62,  8, 16, 0xffff),
+	FP(0x63, 16, 16, 0xffff), FP(0x65,  0, 16, 0xffff),
+	FP(0x66,  8, 16, 0xffff), FP(0x67, 16, 16, 0xffff),
+	FP(0x69,  0, 16, 0xffff), FP(0x6a,  8, 16, 0xffff),
+	FP(0x6b, 16, 16, 0xffff), FP(0x6d,  0, 16, 0xffff),
+	FP(0x6e,  8, 16, 0xffff), FP(0x6f, 16, 16, 0xffff),
+	FP(0x71,  0, 16, 0xffff), FP(0x72,  8, 16, 0xffff),
+	FP(0x73, 16, 16, 0xffff), FP(0x60,  0,  4, 0x0005),
+	FP(0x61, 16,  4, 0x0006), FP(0x62, 24,  4, 0x0009),
+	FP(0x64,  0,  4, 0x0008), FP(0x65, 16,  4, 0x0008),
+	FP(0x66, 24,  4, 0x0004), FP(0x68,  0,  4, 0x0003),
+	FP(0x69, 16,  4, 0x0008), FP(0x6a, 24,  4, 0x0003),
+	FP(0x6c,  0,  4, 0x0005), FP(0x6d, 16,  4, 0x0003),
+	FP(0x6e, 24,  4, 0x0008), FP(0x70,  0,  4, 0x0008),
+	FP(0x71, 16,  4, 0x0008), FP(0x72, 24,  4, 0x0008),
+	FP(0x74,  0,  4, 0x0008), FP(0x60,  8,  4, 0x0005),
+	FP(0x61, 24,  4, 0x0006), FP(0x63,  0,  4, 0x0009),
+	FP(0x64,  8,  4, 0x0008), FP(0x65, 24,  4, 0x0008),
+	FP(0x67,  0,  4, 0x0004), FP(0x68,  8,  4, 0x0003),
+	FP(0x69, 24,  4, 0x0008), FP(0x6b,  0,  4, 0x0003),
+	FP(0x6c,  8,  4, 0x0005), FP(0x6d, 24,  4, 0x0003),
+	FP(0x6f,  0,  4, 0x0008), FP(0x70,  8,  4, 0x0008),
+	FP(0x71, 24,  4, 0x0008), FP(0x73,  0,  4, 0x0008),
+	FP(0x74,  8,  4, 0x0008), FP(0x2b, 16,  1, 0x0000),
 };
 
-static const struct field_patch ddr_fields_1[] = {
-	{ 0x64,  0, 4, 2 }, { 0x66, 24, 4, 1 },
-	{ 0x72, 24, 4, 5 }, { 0x6d, 16, 4, 2 },
-	{ 0x64,  8, 4, 2 }, { 0x67,  0, 4, 1 },
-	{ 0x73,  0, 4, 5 }, { 0x6d, 24, 4, 2 },
+static const u32 ddr_fields_1[] = {
+	FP(0x64,  0, 4, 2), FP(0x66, 24, 4, 1),
+	FP(0x72, 24, 4, 5), FP(0x6d, 16, 4, 2),
+	FP(0x64,  8, 4, 2), FP(0x67,  0, 4, 1),
+	FP(0x73,  0, 4, 5), FP(0x6d, 24, 4, 2),
 };
 
-static const struct efuse_tweak efuse_tweaks[] = {
-	{ 0x0030a120u,  3, 3, 0, 5 }, { 0x0030a124u, 11, 3, 0, 5 },
-	{ 0x0030a124u,  0, 3, 0, 5 }, { 0x0030a120u,  6, 3, 0, 5 },
-	{ 0x0030a120u, 24, 3, 0, 5 }, { 0x0030a120u, 16, 4, 1, 0 },
-	{ 0x0030a124u,  3, 4, 1, 0 }, { 0x0030a124u, 14, 4, 1, 0 },
-	{ 0x0030a128u,  3, 4, 1, 0 }, { 0x0030a120u, 20, 4, 1, 4 },
-	{ 0x0030a124u,  7, 4, 1, 4 }, { 0x0030a124u, 18, 4, 1, 4 },
-	{ 0x0030a128u,  7, 4, 1, 4 }, { 0x00c00070u,  1, 1, 2, 0 },
-	{ 0x00c00070u,  2, 1, 2, 1 }, { 0x00c00070u,  6, 1, 2, 2 },
-	{ 0x00c00070u,  9, 1, 2, 3 }, { 0x00c00464u, 16, 3, 2, 4 },
-	{ 0x00c00464u,  8, 3, 2, 4 }, { 0x00c00464u,  0, 3, 2, 4 },
-	{ 0x00c00144u,  0, 8, 3, 0 }, { 0x00c00410u,  8, 8, 4, 0 },
-	{ 0x00c00468u,  0, 3, 5, 0 }, { 0x00c0046cu,  0, 3, 5, 3 },
-	{ 0x0030a208u,  0, 2, 5, 6 }, { 0x0030a208u,  2, 1, 6, 0 },
-	{ 0x00c00408u, 19, 3, 6, 1 }, { 0x0030a128u, 11, 3, 6, 4 },
-	{ 0x0030a128u,  0, 3, 6, 4 },
+static const u32 efuse_tweaks[] = {
+	ET(0x0030a120u,  3, 3, 0, 5), ET(0x0030a124u, 11, 3, 0, 5),
+	ET(0x0030a124u,  0, 3, 0, 5), ET(0x0030a120u,  6, 3, 0, 5),
+	ET(0x0030a120u, 24, 3, 0, 5), ET(0x0030a120u, 16, 4, 1, 0),
+	ET(0x0030a124u,  3, 4, 1, 0), ET(0x0030a124u, 14, 4, 1, 0),
+	ET(0x0030a128u,  3, 4, 1, 0), ET(0x0030a120u, 20, 4, 1, 4),
+	ET(0x0030a124u,  7, 4, 1, 4), ET(0x0030a124u, 18, 4, 1, 4),
+	ET(0x0030a128u,  7, 4, 1, 4), ET(0x00c00070u,  1, 1, 2, 0),
+	ET(0x00c00070u,  2, 1, 2, 1), ET(0x00c00070u,  6, 1, 2, 2),
+	ET(0x00c00070u,  9, 1, 2, 3), ET(0x00c00464u, 16, 3, 2, 4),
+	ET(0x00c00464u,  8, 3, 2, 4), ET(0x00c00464u,  0, 3, 2, 4),
+	ET(0x00c00144u,  0, 8, 3, 0), ET(0x00c00410u,  8, 8, 4, 0),
+	ET(0x00c00468u,  0, 3, 5, 0), ET(0x00c0046cu,  0, 3, 5, 3),
+	ET(0x0030a208u,  0, 2, 5, 6), ET(0x0030a208u,  2, 1, 6, 0),
+	ET(0x00c00408u, 19, 3, 6, 1), ET(0x0030a128u, 11, 3, 6, 4),
+	ET(0x0030a128u,  0, 3, 6, 4),
 };
 
 static int uart_init_physical(u32 clock_hz)
@@ -140,31 +149,31 @@ static void clock_route(u8 index, u32 value, u32 gate_mask)
 	writel(readl(SYS_BASE + 0x174u) | gate_mask, SYS_BASE + 0x174u);
 }
 
-struct peripheral_route {
-	u8 index;
-	u32 value;
-	u32 gate_mask;
-};
-
 /*
  * Routes installed by the working USB GxLoader before it hands control to a
  * payload.  The vendor IPL exposed SRAM helpers for this late setup; the
  * open IPL replaces that SRAM, so install the state while clock changes are
- * still safe.
+ * still safe.  gate_bit is the single SYS+0x174 gate bit per route.
  */
+struct peripheral_route {
+	u32 value;
+	u8 index;
+	u8 gate_bit;
+};
+
 static const struct peripheral_route peripheral_routes[] = {
 	/* Stock flash BOOT uses 0x05555555 for route 1 (golden a0601000). */
-	{  1, 0x05555555u, 0x00000001u },
-	{  2, 0x05555555u, 0x00000002u },
-	{  3, 0x10000000u, 0x00000200u },
-	{  4, 0x08000000u, 0x00000400u },
-	{  5, 0x08000000u, 0x00000800u },
-	{  6, 0x0cccccccu, 0x00001000u },
-	{  7, 0x09245fd9u, 0x00002000u },
-	{  8, 0x09245fd9u, 0x00004000u },
-	{  9, 0x05d1745du, 0x00008000u },
-	{ 15, 0x09245fd9u, 0x00000004u },
-	{ 16, 0x10000000u, 0x00000001u },
+	{ 0x05555555u,  1,  0 },
+	{ 0x05555555u,  2,  1 },
+	{ 0x10000000u,  3,  9 },
+	{ 0x08000000u,  4, 10 },
+	{ 0x08000000u,  5, 11 },
+	{ 0x0cccccccu,  6, 12 },
+	{ 0x09245fd9u,  7, 13 },
+	{ 0x09245fd9u,  8, 14 },
+	{ 0x05d1745du,  9, 15 },
+	{ 0x09245fd9u, 15,  2 },
+	{ 0x10000000u, 16,  0 },
 };
 
 static void peripheral_clocks_init(void)
@@ -174,7 +183,7 @@ static void peripheral_clocks_init(void)
 	for (i = 0; i < ARRAY_SIZE(peripheral_routes); i++)
 		clock_route(peripheral_routes[i].index,
 			    peripheral_routes[i].value,
-			    peripheral_routes[i].gate_mask);
+			    BIT(peripheral_routes[i].gate_bit));
 
 	/* Exact live state from stock golden-reg-dumps.txt (A030A). */
 	writel(0xca8ca247u, SYS_BASE + 0x024u);
@@ -243,10 +252,10 @@ static void ddr_apply_efuse(void)
 
 	if ((bytes[0] & 1u) && !(bytes[0] & 0x1eu)) {
 		for (i = 0; i < ARRAY_SIZE(efuse_tweaks); i++) {
-			const struct efuse_tweak *t = &efuse_tweaks[i];
+			u32 t = efuse_tweaks[i];
 
-			value = bytes[t->byte_index] >> t->source_shift;
-			set_field(t->addr, t->shift, t->width, value);
+			value = bytes[ET_BYTE(t)] >> ET_SSHIFT(t);
+			set_field(ET_ADDR(t), ET_SHIFT(t), ET_WIDTH(t), value);
 		}
 	}
 
@@ -257,7 +266,9 @@ static void ddr_apply_efuse(void)
 
 int gx6702_ddr_init(void)
 {
+#ifdef SOC_UNIVERSAL
 	u32 i;
+#endif
 	u32 geometry;
 
 	writel(readl(SYS_BASE + 0x174u) | BIT(21), SYS_BASE + 0x174u);
@@ -277,13 +288,22 @@ int gx6702_ddr_init(void)
 	       SYS_BASE + 0x124u);
 	writel(readl(SYS_BASE + 0x128u) | BIT(4) | BIT(8),
 	       SYS_BASE + 0x128u);
+#ifdef SOC_UNIVERSAL
 	geometry = (((ddr_regs_0[5] >> 16) & 0x1fu) - 4u) >> 1;
+#else
+	geometry = DDR_REGS0_GEOMETRY;
+#endif
 	writel(readl(SYS_BASE + 0x12cu) | geometry, SYS_BASE + 0x12cu);
 
+#ifdef SOC_UNIVERSAL
 	for (i = 0; i < ARRAY_SIZE(ddr_regs_0); i++)
 		writel(ddr_regs_0[i], DDR_BASE + (i << 2));
 	for (i = 0; i < ARRAY_SIZE(ddr_regs_100); i++)
 		writel(ddr_regs_100[i], DDR_BASE + ((0x100u + i) << 2));
+#else
+	ddr_apply_rle(ddr_r0, 0u, 155u);
+	ddr_apply_rle(ddr_r100, 0x100u, 26u);
+#endif
 
 	apply_patches(ddr_fields_0, ARRAY_SIZE(ddr_fields_0));
 	apply_patches(ddr_fields_1, ARRAY_SIZE(ddr_fields_1));

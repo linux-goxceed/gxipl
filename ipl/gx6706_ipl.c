@@ -14,7 +14,18 @@
 
 #ifdef SOC_UNIVERSAL
 extern const u32 ddr_regs_0[155];
-#else
+#endif
+
+/*
+ * Canonical GX6706 DDR register-0 window.  This text is the single source
+ * of truth parsed by utils/gen_ddr_rle.py; it is never compiled directly.
+ * Per-SoC builds consume the generated RLE stream in build/$(SOC)/ddr_rle.h,
+ * and the universal build derives its values from ddr_regs_0 plus the three
+ * word overrides applied in gx6706_ddr_init().  Keep the literals intact —
+ * the generator round-trip test (tests/test_ddr_rle.py) fails if they drift
+ * from the committed RLE header.
+ */
+#ifdef DDR_RLE_CANONICAL_SOURCE
 static const u32 gx6706_ddr_regs_0[155] = {
 	0x00000400u, 0x00000000u, 0x000208d5u, 0x00000085u, 0x0000014du, 0x02081202u,
 	0x1e270702u, 0x05050a05u, 0x00b64b08u, 0x00000505u, 0x0a0a0101u, 0x0000c814u,
@@ -46,6 +57,7 @@ static const u32 gx6706_ddr_regs_0[155] = {
 #endif
 
 #if defined(SOC_GX6706) || defined(SOC_UNIVERSAL)
+#ifdef SOC_UNIVERSAL
 static const u32 gx6706_ddr_regs_100[31] = {
 	0x2627260cu, 0x263a260au, 0x212900a0u, 0x00000048u, 0x4303a003u, 0x00000000u,
 	0x26272627u, 0x263a263au, 0x012100a0u, 0x00000048u, 0x6b036b03u, 0x00000000u,
@@ -54,56 +66,59 @@ static const u32 gx6706_ddr_regs_100[31] = {
 	0x00004105u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
 	0x00000000u,
 };
+#else
+#include "ddr_rle.h"
+#endif
 
-static const struct field_patch gx6706_ddr_fields[] = {
-	{ 0x4a, 0, 1, 1 }, { 0x4d, 24, 1, 1 }, { 0x95, 8, 1, 1 },
-	{ 0x5f, 16, 16, 0xffff }, { 0x61, 0, 16, 0xffff },
-	{ 0x62, 8, 16, 0xffff }, { 0x63, 16, 16, 0xffff },
-	{ 0x65, 0, 16, 0xffff }, { 0x66, 8, 16, 0xffff },
-	{ 0x67, 16, 16, 0xffff }, { 0x69, 0, 16, 0xffff },
-	{ 0x6a, 8, 16, 0xffff }, { 0x6b, 16, 16, 0xffff },
-	{ 0x6d, 0, 16, 0xffff }, { 0x6e, 8, 16, 0xffff },
-	{ 0x6f, 16, 16, 0xffff }, { 0x71, 0, 16, 0xffff },
-	{ 0x72, 8, 16, 0xffff }, { 0x73, 16, 16, 0xffff },
-	{ 0x60, 0, 4, 6 }, { 0x61, 16, 4, 8 }, { 0x62, 24, 4, 10 },
-	{ 0x64, 0, 4, 2 }, { 0x65, 16, 4, 8 }, { 0x66, 24, 4, 1 },
-	{ 0x68, 0, 4, 3 }, { 0x69, 16, 4, 8 }, { 0x6a, 24, 4, 3 },
-	{ 0x6c, 0, 4, 5 }, { 0x6d, 16, 4, 2 }, { 0x6e, 24, 4, 9 },
-	{ 0x70, 0, 4, 8 }, { 0x71, 16, 4, 8 }, { 0x72, 24, 4, 5 },
-	{ 0x74, 0, 4, 8 }, { 0x60, 8, 4, 6 }, { 0x61, 24, 4, 8 },
-	{ 0x63, 0, 4, 10 }, { 0x64, 8, 4, 2 }, { 0x65, 24, 4, 8 },
-	{ 0x67, 0, 4, 1 }, { 0x68, 8, 4, 3 }, { 0x69, 24, 4, 8 },
-	{ 0x6b, 0, 4, 3 }, { 0x6c, 8, 4, 5 }, { 0x6d, 24, 4, 2 },
-	{ 0x6f, 0, 4, 9 }, { 0x70, 8, 4, 8 }, { 0x71, 24, 4, 8 },
-	{ 0x73, 0, 4, 5 }, { 0x74, 8, 4, 8 }, { 0x2b, 16, 1, 0 },
+static const u32 gx6706_ddr_fields[] = {
+	FP(0x4a, 0, 1, 1), FP(0x4d, 24, 1, 1), FP(0x95, 8, 1, 1),
+	FP(0x5f, 16, 16, 0xffff), FP(0x61, 0, 16, 0xffff),
+	FP(0x62, 8, 16, 0xffff), FP(0x63, 16, 16, 0xffff),
+	FP(0x65, 0, 16, 0xffff), FP(0x66, 8, 16, 0xffff),
+	FP(0x67, 16, 16, 0xffff), FP(0x69, 0, 16, 0xffff),
+	FP(0x6a, 8, 16, 0xffff), FP(0x6b, 16, 16, 0xffff),
+	FP(0x6d, 0, 16, 0xffff), FP(0x6e, 8, 16, 0xffff),
+	FP(0x6f, 16, 16, 0xffff), FP(0x71, 0, 16, 0xffff),
+	FP(0x72, 8, 16, 0xffff), FP(0x73, 16, 16, 0xffff),
+	FP(0x60, 0, 4, 6), FP(0x61, 16, 4, 8), FP(0x62, 24, 4, 10),
+	FP(0x64, 0, 4, 2), FP(0x65, 16, 4, 8), FP(0x66, 24, 4, 1),
+	FP(0x68, 0, 4, 3), FP(0x69, 16, 4, 8), FP(0x6a, 24, 4, 3),
+	FP(0x6c, 0, 4, 5), FP(0x6d, 16, 4, 2), FP(0x6e, 24, 4, 9),
+	FP(0x70, 0, 4, 8), FP(0x71, 16, 4, 8), FP(0x72, 24, 4, 5),
+	FP(0x74, 0, 4, 8), FP(0x60, 8, 4, 6), FP(0x61, 24, 4, 8),
+	FP(0x63, 0, 4, 10), FP(0x64, 8, 4, 2), FP(0x65, 24, 4, 8),
+	FP(0x67, 0, 4, 1), FP(0x68, 8, 4, 3), FP(0x69, 24, 4, 8),
+	FP(0x6b, 0, 4, 3), FP(0x6c, 8, 4, 5), FP(0x6d, 24, 4, 2),
+	FP(0x6f, 0, 4, 9), FP(0x70, 8, 4, 8), FP(0x71, 24, 4, 8),
+	FP(0x73, 0, 4, 5), FP(0x74, 8, 4, 8), FP(0x2b, 16, 1, 0),
 };
 
-static const struct efuse_tweak gx6706_efuse_tweaks[] = {
-	{ 0x0030a120u, 3, 3, 0, 5 }, { 0x0030a124u, 11, 3, 0, 5 },
-	{ 0x0030a124u, 0, 3, 0, 5 }, { 0x0030a12cu, 16, 3, 0, 5 },
-	{ 0x0030a12cu, 20, 3, 0, 5 }, { 0x0030a12cu, 24, 3, 0, 5 },
-	{ 0x0030a12cu, 28, 3, 0, 5 }, { 0x0030a120u, 16, 3, 0, 5 },
-	{ 0x0030a120u, 19, 3, 0, 5 }, { 0x0030a210u, 0, 4, 1, 0 },
-	{ 0x0030a210u, 8, 4, 1, 0 }, { 0x0030a210u, 16, 4, 1, 0 },
-	{ 0x0030a210u, 24, 4, 1, 0 }, { 0x0030a124u, 3, 4, 1, 0 },
-	{ 0x0030a124u, 14, 4, 1, 0 }, { 0x0030a128u, 3, 4, 1, 0 },
-	{ 0x0030a210u, 4, 4, 1, 4 }, { 0x0030a210u, 12, 4, 1, 4 },
-	{ 0x0030a210u, 20, 4, 1, 4 }, { 0x0030a210u, 28, 4, 1, 4 },
-	{ 0x0030a124u, 7, 4, 1, 4 }, { 0x0030a124u, 18, 4, 1, 4 },
-	{ 0x0030a128u, 7, 4, 1, 4 }, { 0x00c00070u, 1, 1, 2, 0 },
-	{ 0x00c00070u, 2, 1, 2, 1 }, { 0x00c00070u, 6, 1, 2, 2 },
-	{ 0x00c00070u, 9, 1, 2, 3 }, { 0x00c00464u, 16, 3, 2, 4 },
-	{ 0x00c00464u, 8, 3, 2, 4 }, { 0x00c00464u, 0, 3, 2, 4 },
-	{ 0x00c00144u, 0, 8, 3, 0 }, { 0x00c00410u, 8, 8, 4, 0 },
-	{ 0x00c00468u, 0, 3, 5, 0 }, { 0x00c00468u, 4, 3, 5, 0 },
-	{ 0x00c00468u, 8, 3, 5, 0 }, { 0x00c00468u, 12, 3, 5, 0 },
-	{ 0x00c00468u, 16, 3, 5, 0 }, { 0x00c00468u, 20, 3, 5, 0 },
-	{ 0x00c00468u, 24, 3, 5, 0 }, { 0x00c00468u, 28, 3, 5, 0 },
-	{ 0x00c0046cu, 0, 3, 5, 3 }, { 0x00c0046cu, 4, 3, 5, 3 },
-	{ 0x00c0046cu, 8, 3, 5, 3 }, { 0x00c0046cu, 12, 3, 5, 3 },
-	{ 0x00c0046cu, 16, 3, 5, 3 }, { 0x00c0046cu, 20, 3, 5, 3 },
-	{ 0x00c0046cu, 24, 3, 5, 3 }, { 0x00c0046cu, 28, 3, 5, 3 },
-	{ 0x00c00460u, 9, 1, 6, 0 }, { 0x00c00408u, 19, 3, 6, 1 },
+static const u32 gx6706_efuse_tweaks[] = {
+	ET(0x0030a120u, 3, 3, 0, 5), ET(0x0030a124u, 11, 3, 0, 5),
+	ET(0x0030a124u, 0, 3, 0, 5), ET(0x0030a12cu, 16, 3, 0, 5),
+	ET(0x0030a12cu, 20, 3, 0, 5), ET(0x0030a12cu, 24, 3, 0, 5),
+	ET(0x0030a12cu, 28, 3, 0, 5), ET(0x0030a120u, 16, 3, 0, 5),
+	ET(0x0030a120u, 19, 3, 0, 5), ET(0x0030a210u, 0, 4, 1, 0),
+	ET(0x0030a210u, 8, 4, 1, 0), ET(0x0030a210u, 16, 4, 1, 0),
+	ET(0x0030a210u, 24, 4, 1, 0), ET(0x0030a124u, 3, 4, 1, 0),
+	ET(0x0030a124u, 14, 4, 1, 0), ET(0x0030a128u, 3, 4, 1, 0),
+	ET(0x0030a210u, 4, 4, 1, 4), ET(0x0030a210u, 12, 4, 1, 4),
+	ET(0x0030a210u, 20, 4, 1, 4), ET(0x0030a210u, 28, 4, 1, 4),
+	ET(0x0030a124u, 7, 4, 1, 4), ET(0x0030a124u, 18, 4, 1, 4),
+	ET(0x0030a128u, 7, 4, 1, 4), ET(0x00c00070u, 1, 1, 2, 0),
+	ET(0x00c00070u, 2, 1, 2, 1), ET(0x00c00070u, 6, 1, 2, 2),
+	ET(0x00c00070u, 9, 1, 2, 3), ET(0x00c00464u, 16, 3, 2, 4),
+	ET(0x00c00464u, 8, 3, 2, 4), ET(0x00c00464u, 0, 3, 2, 4),
+	ET(0x00c00144u, 0, 8, 3, 0), ET(0x00c00410u, 8, 8, 4, 0),
+	ET(0x00c00468u, 0, 3, 5, 0), ET(0x00c00468u, 4, 3, 5, 0),
+	ET(0x00c00468u, 8, 3, 5, 0), ET(0x00c00468u, 12, 3, 5, 0),
+	ET(0x00c00468u, 16, 3, 5, 0), ET(0x00c00468u, 20, 3, 5, 0),
+	ET(0x00c00468u, 24, 3, 5, 0), ET(0x00c00468u, 28, 3, 5, 0),
+	ET(0x00c0046cu, 0, 3, 5, 3), ET(0x00c0046cu, 4, 3, 5, 3),
+	ET(0x00c0046cu, 8, 3, 5, 3), ET(0x00c0046cu, 12, 3, 5, 3),
+	ET(0x00c0046cu, 16, 3, 5, 3), ET(0x00c0046cu, 20, 3, 5, 3),
+	ET(0x00c0046cu, 24, 3, 5, 3), ET(0x00c0046cu, 28, 3, 5, 3),
+	ET(0x00c00460u, 9, 1, 6, 0), ET(0x00c00408u, 19, 3, 6, 1),
 };
 
 static int gx6706_uart_init(u32 clock_hz)
@@ -138,9 +153,25 @@ static void gx6706_clock_route(u8 index, u32 value, u32 gate_offset,
 	writel(readl(gate) | gate_mask, gate);
 }
 
+/* Descriptor gate selector 1 means SYS+0x170; 2 means SYS+0x174. */
+struct route_desc {
+	u32 value;
+	u32 gate_mask;
+	u8 index;
+	u8 gate_offset;	/* (reg - SYS_BASE) / 4, so 0x170 -> 0x5c */
+};
+
+static const struct route_desc clock_routes[] = {
+	{ 0x01745d17u, 0x00020000u, 10, 0x5d },
+	{ 0x01999999u, 0x00040000u, 11, 0x5d },
+	{ 0x08000000u, 0x00000004u, 15, 0x5c },
+	{ 0x10000000u, 0x00008000u, 19, 0x5d },
+};
+
 int gx6706_clocks_init(void)
 {
 	u32 reg;
+	u32 i;
 
 	writel(0, SYS_BASE + 0x170u);
 	writel(0, SYS_BASE + 0x174u);
@@ -157,11 +188,10 @@ int gx6706_clocks_init(void)
 	writel((reg & ~0x00000f00u) | 0x00000200u, SYS_BASE + 0x024u);
 	reg = readl(SYS_BASE + 0x178u);
 	writel((reg & ~0x0000003fu) | 0x00000003u, SYS_BASE + 0x178u);
-	/* Descriptor gate selector 1 means SYS+0x170; 2 means SYS+0x174. */
-	gx6706_clock_route(10, 0x01745d17u, 0x174u, 0x00020000u);
-	gx6706_clock_route(11, 0x01999999u, 0x174u, 0x00040000u);
-	gx6706_clock_route(15, 0x08000000u, 0x170u, 0x00000004u);
-	gx6706_clock_route(19, 0x10000000u, 0x174u, 0x00008000u);
+	for (i = 0; i < ARRAY_SIZE(clock_routes); i++)
+		gx6706_clock_route(clock_routes[i].index, clock_routes[i].value,
+				   (u32)clock_routes[i].gate_offset << 2,
+				   clock_routes[i].gate_mask);
 	writel(readl(SYS_BASE + 0x174u) | BIT(20) | BIT(21), SYS_BASE + 0x174u);
 
 	reg = readl(SYS_BASE);
@@ -202,10 +232,10 @@ static void gx6706_apply_efuse(void)
 	}
 	if ((bytes[0] & 1u) && !(bytes[0] & 0x1eu)) {
 		for (i = 0; i < ARRAY_SIZE(gx6706_efuse_tweaks); i++) {
-			const struct efuse_tweak *t = &gx6706_efuse_tweaks[i];
-			u32 value = bytes[t->byte_index] >> t->source_shift;
+			u32 t = gx6706_efuse_tweaks[i];
+			u32 value = bytes[ET_BYTE(t)] >> ET_SSHIFT(t);
 
-			set_field(t->addr, t->shift, t->width, value);
+			set_field(ET_ADDR(t), ET_SHIFT(t), ET_WIDTH(t), value);
 		}
 		/* The vendor applies this signed trim only for valid calibration. */
 		set_field(SYS_BASE + 0x128u, 16, 4,
@@ -232,7 +262,7 @@ int gx6706_ddr_init(void)
 #ifdef SOC_UNIVERSAL
 	geometry = (((ddr_regs_0[5] >> 16) & 0x1fu) - 4u) >> 1;
 #else
-	geometry = (((gx6706_ddr_regs_0[5] >> 16) & 0x1fu) - 4u) >> 1;
+	geometry = DDR_REGS0_GEOMETRY;
 #endif
 	writel(readl(SYS_BASE + 0x120u) | BIT(0) | BIT(31), SYS_BASE + 0x120u);
 	writel(readl(SYS_BASE + 0x124u) | 0x00220440u |
@@ -247,12 +277,12 @@ int gx6706_ddr_init(void)
 	writel(0x00000000u, DDR_BASE + (28u << 2));
 	writel(0x00004e00u, DDR_BASE + (74u << 2));
 	writel(0x00003030u, DDR_BASE + (81u << 2));
-#else
-	for (i = 0; i < ARRAY_SIZE(gx6706_ddr_regs_0); i++)
-		writel(gx6706_ddr_regs_0[i], DDR_BASE + (i << 2));
-#endif
 	for (i = 0; i < ARRAY_SIZE(gx6706_ddr_regs_100); i++)
 		writel(gx6706_ddr_regs_100[i], DDR_BASE + ((0x100u + i) << 2));
+#else
+	ddr_apply_rle(ddr_r0, 0u, 155u);
+	ddr_apply_rle(ddr_r100, 0x100u, 31u);
+#endif
 	if (variant == 3u) {
 		writel(0x00002828u, DDR_BASE + 0x144u);
 		writel(0x43039e03u, DDR_BASE + 0x410u);

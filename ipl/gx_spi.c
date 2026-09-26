@@ -5,6 +5,7 @@
  */
 
 #include "gx_hw.h"
+#include "ipl_internal.h"
 
 #if defined(SOC_GX6706)
 
@@ -55,41 +56,10 @@ static void dw_chip_select(int assert)
 	writel(assert ? 2u : 3u, dw_cs_control());
 }
 
+/* Post-MMU reads go through the uncached MMIO alias of the eFuse window. */
 static int gx6706_efuse_read(u32 address, u8 *value)
 {
-	const u32 command_reg = 0xa0f80080u;
-	const u32 status_reg = 0xa0f80088u;
-	u32 command;
-	u32 count;
-	volatile u32 settle;
-
-	for (count = 0; count < DWSPI_TIMEOUT; count++) {
-		if (readl(status_reg) & BIT(10))
-			break;
-	}
-	if (count == DWSPI_TIMEOUT)
-		return -1;
-	for (count = 0; count < DWSPI_TIMEOUT; count++) {
-		if (!(readl(status_reg) & BIT(8)))
-			break;
-	}
-	if (count == DWSPI_TIMEOUT)
-		return -1;
-
-	command = ((address & 0x7ffu) << 3) | BIT(14);
-	writel(command, command_reg);
-	for (settle = 0; settle < 0x1000u; settle++)
-		;
-	writel(command & ~BIT(14), command_reg);
-	for (count = 0; count < DWSPI_TIMEOUT; count++) {
-		if (readl(status_reg) & BIT(9)) {
-			*value = (u8)readl(status_reg);
-			writel(0, command_reg);
-			return 0;
-		}
-	}
-	writel(0, command_reg);
-	return -1;
+	return efuse_read_at(EFUSE_CMD_VIRT, EFUSE_STATUS_VIRT, address, value);
 }
 
 /*

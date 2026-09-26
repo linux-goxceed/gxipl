@@ -10,6 +10,9 @@
 #define UART_VIRT		0xa0402000u
 #define EFUSE_CMD		0x00f80080u
 #define EFUSE_STATUS		0x00f80088u
+/* Uncached MMIO alias used once the CK610 MMU is on. */
+#define EFUSE_CMD_VIRT		0xa0f80080u
+#define EFUSE_STATUS_VIRT	0xa0f80088u
 
 /* Reversed-byte identification fields shared by Gemini and Cygnus. */
 #define GX_CHIP_NAME_PHYS	(SYS_BASE + 0x190u)
