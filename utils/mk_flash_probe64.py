@@ -32,6 +32,11 @@ REPO = ROOT.parent  # re-boot/
 BOOTCODE_MAGIC = 0x43425847
 UBOOT_ENTRY = 0x93CE8420
 IPL_BODY = 0x2000
+CONFIG_SIZE = 64
+# Config sits in the body tail; the BootROM trailer (body 0x1FF8) lies inside
+# it, at config-relative 0x1ff8 - 0x1fc0 = 0x38.  Derive, never hardcode.
+CONFIG_OFF = IPL_BODY - CONFIG_SIZE
+CFG_TRAILER_OFF = 0x1FF8 - CONFIG_OFF
 BOOT_CRC_OFF = 0x19D
 TABLE_CRC_OFF = 0x1FC
 ERASE_SIZE = 64 * 1024
@@ -171,7 +176,7 @@ def seal_ipl_boot(ipl_boot: Path, bootcode_off: int, uboot_off: int = 0) -> None
     the BootROM CRC32 and IPL-config checksum no longer fight each other.
     """
     data = bytearray(ipl_boot.read_bytes())
-    cfg_off = 0x20 + IPL_BODY - 512
+    cfg_off = 0x20 + IPL_BODY - CONFIG_SIZE
     t_abs = 0x20 + 0x1FF8
     struct.pack_into("<I", data, cfg_off + 16, bootcode_off)
     struct.pack_into("<I", data, cfg_off + 20, uboot_off)
@@ -179,8 +184,8 @@ def seal_ipl_boot(ipl_boot: Path, bootcode_off: int, uboot_off: int = 0) -> None
 
     def cfg_sum() -> int:
         s = 0
-        for i in range(8, 512):
-            if 0x1F8 <= i < 0x1FC:
+        for i in range(8, CONFIG_SIZE):
+            if CFG_TRAILER_OFF <= i < CFG_TRAILER_OFF + 4:
                 continue
             s += data[cfg_off + i]
         return s & 0xFFFF
@@ -341,10 +346,11 @@ def main() -> int:
     expect = bootrom_stage1_crc(body[:0x1FF8])
     got = struct.unpack_from("<I", body, 0x1FF8)[0]
     assert got == expect, f"flash trailer {got:08x} != BootROM CRC {expect:08x}"
-    cfg = body[0x1E00:0x2000]
+    cfg = body[CONFIG_OFF:IPL_BODY]
     magic, ver, crc16 = struct.unpack_from("<IHH", cfg, 0)
     assert magic == 0x47464331 and ver == 1
-    cfg_sum = sum(cfg[i] for i in range(8, 512) if not (0x1F8 <= i < 0x1FC)) & 0xFFFF
+    cfg_sum = sum(cfg[i] for i in range(8, CONFIG_SIZE)
+                  if not (CFG_TRAILER_OFF <= i < CFG_TRAILER_OFF + 4)) & 0xFFFF
     assert cfg_sum == crc16
     flags, _, bc_off, ub_cfg = struct.unpack_from("<IIII", cfg, 8)
     assert not (flags & 0x10), "uart_direct must be clear for SPI bootcode"

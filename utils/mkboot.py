@@ -9,10 +9,21 @@ from pathlib import Path
 
 HEADER_SIZE = 0x20
 BODY_SIZE = 0x2000		# BootROM stage-1 window (UART and flash)
-CODE_END = 0x1E00		# last 512 bytes reserved for IPL config
+CODE_END = 0x1FC0		# last 64 bytes reserved for IPL config
 TRAILER_OFF = 0x1FF8		# BootROM CRC / legacy trailer word
 LEGACY_TRAILER = bytes.fromhex("33dea189")
-CONFIG_SIZE = 512
+CONFIG_SIZE = 64
+# The BootROM trailer sits inside the config, so derive its config-relative
+# position from the two absolute offsets rather than hardcoding it:
+# TRAILER_OFF - CODE_END == 0x1ff8 - 0x1fc0 == 0x38 == CONFIG_SIZE - 8.
+CFG_TRAILER_OFF = TRAILER_OFF - CODE_END
+# The FINAL 4 config bytes are never written: the BootROM copies only
+# BOOT[4:0x2000] == 8188 bytes (SRAM up to 0x00101FFB) but the config runs
+# to 0x00101FFF, so bytes 60..63 hold whatever was in SRAM.  Sealing them
+# into the checksum made ipl_config_valid() fail on hardware even though
+# the blob was correct in the file.  Mirrors CFG_UNCOPIED_OFF in
+# ipl/ipl_config.c and UNCOPIED_OFF in utils/iplcfg.py.
+UNCOPIED_OFF = CONFIG_SIZE - 4
 
 SOCS = {
     "gx6702": {"chip_id": 0x6701, "crc_trailer": False, "extra_chip_ids": ()},
@@ -28,6 +39,13 @@ SOCS = {
 GXMT_MAGIC = b"GXMT"
 GXMT_VERSION = 1
 GXMT_MAX_EXTRA = 6
+
+# Config flag bits, mirroring include/ipl_config.h.  Named here so tests and
+# callers do not have to hardcode magic numbers against the on-disk layout.
+CFG_VERBOSE_BIT = 1 << 0
+CFG_SKIP_USB_BIT = 1 << 1
+CFG_SKIP_SPI_BIT = 1 << 2
+CFG_UART_DIRECT_BIT = 1 << 4
 
 
 def pack_target_catalog(extra_chip_ids: tuple[int, ...] | list[int]) -> bytes:
@@ -119,17 +137,29 @@ def _cfg_crc(cfg: bytes) -> int:
     for i, b in enumerate(cfg):
         if i < 8:
             continue
-        if 0x1F8 <= i < 0x1FC:
+        if i >= UNCOPIED_OFF:
+            continue
+        if CFG_TRAILER_OFF <= i < CFG_TRAILER_OFF + 4:
             continue
         total += b
     return total & 0xFFFF
 
 
 def default_config_blob() -> bytes:
-    """Build a valid v1 IPL config (verbosity on)."""
+    """Build a valid v1 IPL config.
+
+    Flags are VERBOSE only.  IPL_CFG_UART_DIRECT (bit 4) is deliberately NOT
+    set: it makes ipl_post_mmu() jump straight to the UART loader, skipping
+    both the SPI bootcode attempt and the USB stage-1.5 attempt.  A container
+    built with that flag set reaches RUNGET and nothing else, which looks
+    exactly like "USB does not work" when it actually never ran.
+
+    Set bit 4 back for a pure UART-bringup container, where reaching the
+    uploader immediately is the point.
+    """
     blob = bytearray(CONFIG_SIZE)
     struct.pack_into("<IHH", blob, 0, 0x47464331, 1, 0)
-    struct.pack_into("<IIII", blob, 8, 0x1 | 0x10, 60, 0x4000, 0x10000)  # verbose|uart_direct
+    struct.pack_into("<IIII", blob, 8, CFG_VERBOSE_BIT, 60, 0x4000, 0x10000)
     struct.pack_into("<I", blob, 24, 512 * 1024)
     struct.pack_into("<H", blob, 6, _cfg_crc(blob))
     return bytes(blob)
@@ -141,7 +171,7 @@ def main() -> int:
     parser.add_argument("input")
     parser.add_argument("output")
     parser.add_argument("--config", type=Path,
-                        help="optional 512-byte config blob to place at end")
+                        help="optional 64-byte config blob to place at end")
     parser.add_argument("--extra-chip-id", action="append", type=chip_id_arg,
                         dest="extra_chip_ids", metavar="ID",
                         help="GXMT extra chip ID (repeatable). Replaces the SoC default catalog")
@@ -154,7 +184,7 @@ def main() -> int:
     payload = Path(args.input).read_bytes()
     if len(payload) > CODE_END:
         parser.error(f"IPL is {len(payload)} bytes; limit is {CODE_END} "
-                     f"(8 KiB body minus 512-byte config)")
+                     f"(8 KiB body minus {CONFIG_SIZE}-byte config)")
 
     header = bytearray(HEADER_SIZE)
     header[0:4] = b"toob"
@@ -173,7 +203,7 @@ def main() -> int:
     else:
         cfg = default_config_blob()
 
-    # Config occupies the last 512 bytes. Legacy trailer word stays at the
+    # Config occupies the last CONFIG_SIZE bytes. Legacy trailer word stays at the
     # historical offset inside that region (0x1FF8).
     cfg_off = BODY_SIZE - CONFIG_SIZE
     body[cfg_off:cfg_off + CONFIG_SIZE] = cfg

@@ -27,8 +27,10 @@ SECTIONS
 	__bss_end = .;
 
 	__image_end = LOADADDR(.data) + SIZEOF(.data);
-	ASSERT(__image_end <= 0x00101e00,
-	       "IPL exceeds 8KiB code window before 512-byte config")
+	/* 0x1fc0 = end of the 64-byte IPL config, which is itself well inside
+	 * the BootROM's hard 0x1ff8 limit (4-byte stage-1 trailer). */
+	ASSERT(__image_end <= 0x00101fc0,
+	       "IPL exceeds code window before 64-byte config")
 
 	/DISCARD/ : {
 		*(.comment .note* .eh_frame .csky_attributes)

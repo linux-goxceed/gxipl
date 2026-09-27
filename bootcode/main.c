@@ -8,6 +8,10 @@
 struct ipl_config g_ipl_cfg;
 int g_verbose;
 
+/* Set by stage 1 before the jump; see STAGE_HANDOFF_VA in gx_hw.h. */
+u32 stage_handoff;
+int stage_from_usb;
+
 extern char __bss_start[];
 extern char __bss_end[];
 
@@ -25,7 +29,17 @@ void bootcode_main(void)
 {
 	bss_clear();
 	ipl_config_load(&g_ipl_cfg);
+
 	g_verbose = (g_ipl_cfg.flags & IPL_CFG_VERBOSE) ? 1 : 0;
+
+	/*
+	 * Did stage 1 hand over to us, and by which transport?  The marker
+	 * lives in its own DDR slot, not the IPL config blob: the BootROM
+	 * window truncates before the config, so the config never arrives in
+	 * SRAM on the UART path and any flag written there is lost.
+	 */
+	stage_handoff = *(volatile u32 *)STAGE_HANDOFF_VA;
+	stage_from_usb = (stage_handoff == STAGE_HANDOFF_USB_PHY_READY);
 
 	bc_banner();
 

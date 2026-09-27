@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 import struct
 import subprocess
 import sys
@@ -22,8 +23,10 @@ import mkboot  # noqa: E402
 
 
 def config_sum(config: bytes) -> int:
+    skip_lo = mkboot.CFG_TRAILER_OFF
     return sum(value for index, value in enumerate(config)
-               if index >= 8 and not 0x1F8 <= index < 0x1FC) & 0xFFFF
+               if index >= 8
+               and not skip_lo <= index < skip_lo + 4) & 0xFFFF
 
 
 class BootRomContainerTests(unittest.TestCase):
@@ -51,7 +54,7 @@ class BootRomContainerTests(unittest.TestCase):
         self.assertEqual(image[:4], b"toob")
         self.assertEqual(struct.unpack_from("<H", image, 6)[0], 0x6705)
         body = image[0x20:]
-        config = body[0x1E00:0x2000]
+        config = body[mkboot.CODE_END:0x2000]
         self.assertEqual(struct.unpack_from("<H", config, 6)[0],
                          config_sum(config))
         self.assertEqual(struct.unpack_from("<I", body, 0x1FF8)[0],
@@ -67,7 +70,7 @@ class BootRomContainerTests(unittest.TestCase):
 
     def test_code_window_is_enforced(self) -> None:
         with self.assertRaises(subprocess.CalledProcessError):
-            self.run_mkboot("gx6706", bytes(0x1E01))
+            self.run_mkboot("gx6706", bytes(mkboot.CODE_END + 1))
 
     def test_universal_crc_sealed_6701_header(self) -> None:
         image = self.run_mkboot("universal")
@@ -126,7 +129,7 @@ class BootRomContainerTests(unittest.TestCase):
 
     def test_universal_code_window_is_enforced(self) -> None:
         with self.assertRaises(subprocess.CalledProcessError):
-            self.run_mkboot("universal", bytes(0x1E01))
+            self.run_mkboot("universal", bytes(mkboot.CODE_END + 1))
 
     def test_iplcfg_reseals_universal_crc(self) -> None:
         image = self.patch_config(self.run_mkboot("universal"))
@@ -170,7 +173,7 @@ class BootRomContainerTests(unittest.TestCase):
     def test_iplcfg_reseals_gx6706_bootrom_crc(self) -> None:
         image = self.patch_config(self.run_mkboot("gx6706"))
         body = image[0x20:]
-        config = body[0x1E00:0x2000]
+        config = body[mkboot.CODE_END:0x2000]
         self.assertEqual(struct.unpack_from("<I", config, 8)[0] & 1, 0)
         self.assertEqual(struct.unpack_from("<H", config, 6)[0],
                          config_sum(config))
@@ -233,18 +236,58 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual(int.from_bytes(table[0x1FC:0x200], "big"),
                          zlib.crc32(table[:0x1FC]) & 0xFFFFFFFF)
 
+    def test_default_config_does_not_set_uart_direct(self) -> None:
+        """UART_DIRECT must be off in a default container.
+
+        It makes ipl_post_mmu() jump straight to the UART loader, skipping
+        both the SPI bootcode attempt and the USB stage-1.5 attempt.  A
+        container shipped with it set reaches RUNGET and nothing else, which
+        looks exactly like "USB is broken" when the branch never ran at all.
+        """
+        cfg = mkboot.default_config_blob()
+        flags = struct.unpack_from("<I", cfg, 8)[0]
+        self.assertFalse(
+            flags & mkboot.CFG_UART_DIRECT_BIT,
+            "default config sets UART_DIRECT: SPI and USB are unreachable")
+        self.assertTrue(flags & mkboot.CFG_VERBOSE_BIT)
+
+    def test_compile_time_fallback_does_not_force_uart(self) -> None:
+        """IPL_CFG_DEFAULT_FLAGS must not set UART_DIRECT either.
+
+        This is the fallback taken when no valid config blob is found in
+        SRAM.  If it sets UART_DIRECT, an unreadable or corrupt config makes
+        the IPL jump straight to the UART loader and never try SPI or USB --
+        which presents identically to "the stick does not work".
+        """
+        header = (ROOT / "include" / "ipl_config.h").read_text()
+        m = re.search(r"#define\s+IPL_CFG_DEFAULT_FLAGS\s+(.+)", header)
+        self.assertIsNotNone(m, "IPL_CFG_DEFAULT_FLAGS not found")
+        self.assertNotIn("UART_DIRECT", m.group(1),
+                         "compile-time fallback forces the UART path")
+
+    def test_default_config_does_not_skip_transports(self) -> None:
+        cfg = mkboot.default_config_blob()
+        flags = struct.unpack_from("<I", cfg, 8)[0]
+        for name, bit in (("SKIP_USB", mkboot.CFG_SKIP_USB_BIT),
+                          ("SKIP_SPI", mkboot.CFG_SKIP_SPI_BIT)):
+            with self.subTest(flag=name):
+                self.assertFalse(flags & bit)
+
     def test_sealing_preserves_config_and_source(self) -> None:
         original = bytearray(0x2020)
         original[:4] = b"toob"
-        original[0x20 + 0x1E00:0x20 + 0x2000] = mkboot.default_config_blob()
+        cfg_off = 0x20 + mkboot.CODE_END
+        original[cfg_off:0x20 + 0x2000] = mkboot.default_config_blob()
         before = bytes(original)
         sealed = mk_flash_image.seal_ipl_container(before, 0x4000, 0, True)
         self.assertEqual(bytes(original), before)
-        cfg = sealed[0x20 + 0x1E00:0x20 + 0x2000]
+        cfg = sealed[cfg_off:0x20 + 0x2000]
         self.assertEqual(struct.unpack_from("<I", cfg, 16)[0], 0x4000)
         self.assertEqual(struct.unpack_from("<H", cfg, 6)[0], config_sum(cfg))
-        self.assertEqual(cfg[28:0x1F8], before[0x20 + 0x1E00 + 28:
-                                             0x20 + 0x1E00 + 0x1F8])
+        # Reserved padding after the 28 real bytes must survive sealing, up to
+        # (but not including) the BootROM trailer window.
+        keep = mkboot.CFG_TRAILER_OFF
+        self.assertEqual(cfg[28:keep], before[cfg_off + 28:cfg_off + keep])
 
 
 def make_elf(vaddr: int = 0x90001000, memsz: int = 4) -> bytes:

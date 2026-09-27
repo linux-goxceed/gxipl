@@ -93,33 +93,50 @@ static const u32 gx6706_ddr_fields[] = {
 	FP(0x73, 0, 4, 5), FP(0x74, 8, 4, 8), FP(0x2b, 16, 1, 0),
 };
 
-static const u32 gx6706_efuse_tweaks[] = {
-	ET(0x0030a120u, 3, 3, 0, 5), ET(0x0030a124u, 11, 3, 0, 5),
-	ET(0x0030a124u, 0, 3, 0, 5), ET(0x0030a12cu, 16, 3, 0, 5),
-	ET(0x0030a12cu, 20, 3, 0, 5), ET(0x0030a12cu, 24, 3, 0, 5),
-	ET(0x0030a12cu, 28, 3, 0, 5), ET(0x0030a120u, 16, 3, 0, 5),
-	ET(0x0030a120u, 19, 3, 0, 5), ET(0x0030a210u, 0, 4, 1, 0),
-	ET(0x0030a210u, 8, 4, 1, 0), ET(0x0030a210u, 16, 4, 1, 0),
-	ET(0x0030a210u, 24, 4, 1, 0), ET(0x0030a124u, 3, 4, 1, 0),
-	ET(0x0030a124u, 14, 4, 1, 0), ET(0x0030a128u, 3, 4, 1, 0),
-	ET(0x0030a210u, 4, 4, 1, 4), ET(0x0030a210u, 12, 4, 1, 4),
-	ET(0x0030a210u, 20, 4, 1, 4), ET(0x0030a210u, 28, 4, 1, 4),
-	ET(0x0030a124u, 7, 4, 1, 4), ET(0x0030a124u, 18, 4, 1, 4),
-	ET(0x0030a128u, 7, 4, 1, 4), ET(0x00c00070u, 1, 1, 2, 0),
-	ET(0x00c00070u, 2, 1, 2, 1), ET(0x00c00070u, 6, 1, 2, 2),
-	ET(0x00c00070u, 9, 1, 2, 3), ET(0x00c00464u, 16, 3, 2, 4),
-	ET(0x00c00464u, 8, 3, 2, 4), ET(0x00c00464u, 0, 3, 2, 4),
-	ET(0x00c00144u, 0, 8, 3, 0), ET(0x00c00410u, 8, 8, 4, 0),
-	ET(0x00c00468u, 0, 3, 5, 0), ET(0x00c00468u, 4, 3, 5, 0),
-	ET(0x00c00468u, 8, 3, 5, 0), ET(0x00c00468u, 12, 3, 5, 0),
-	ET(0x00c00468u, 16, 3, 5, 0), ET(0x00c00468u, 20, 3, 5, 0),
-	ET(0x00c00468u, 24, 3, 5, 0), ET(0x00c00468u, 28, 3, 5, 0),
-	ET(0x00c0046cu, 0, 3, 5, 3), ET(0x00c0046cu, 4, 3, 5, 3),
-	ET(0x00c0046cu, 8, 3, 5, 3), ET(0x00c0046cu, 12, 3, 5, 3),
-	ET(0x00c0046cu, 16, 3, 5, 3), ET(0x00c0046cu, 20, 3, 5, 3),
-	ET(0x00c0046cu, 24, 3, 5, 3), ET(0x00c0046cu, 28, 3, 5, 3),
-	ET(0x00c00460u, 9, 1, 6, 0), ET(0x00c00408u, 19, 3, 6, 1),
+/*
+ * Three-byte eFuse tweak descriptors:
+ * base(1) | register word offset(9) | shift(5) | width code(3) |
+ * source byte(3) | source shift(3). Width code 7 represents width 3.
+ */
+#define ET3_WCODE(w) ((w) == 3u ? 7u : (w) == 1u ? 0u : (w) == 2u ? 1u : (w) == 4u ? 2u : 3u)
+#define ET3_PACK(a, s, w, b, ss) \
+  (ET_BASE(a) | ((((a) & 0xfffu) >> 2) << 1) | ((u32)(s) << 10) | \
+   (ET3_WCODE(w) << 15) | ((u32)(b) << 18) | ((u32)(ss) << 21))
+#define ET3(a, s, w, b, ss) \
+  (ET3_PACK(a, s, w, b, ss) & 0xffu), \
+  ((ET3_PACK(a, s, w, b, ss) >> 8) & 0xffu), \
+  ((ET3_PACK(a, s, w, b, ss) >> 16) & 0xffu)
+
+static const u8 gx6706_efuse_tweaks[] = {
+	ET3(0x0030a120u, 3, 3, 0, 5), ET3(0x0030a124u, 11, 3, 0, 5),
+	ET3(0x0030a124u, 0, 3, 0, 5), ET3(0x0030a12cu, 16, 3, 0, 5),
+	ET3(0x0030a12cu, 20, 3, 0, 5), ET3(0x0030a12cu, 24, 3, 0, 5),
+	ET3(0x0030a12cu, 28, 3, 0, 5), ET3(0x0030a120u, 16, 3, 0, 5),
+	ET3(0x0030a120u, 19, 3, 0, 5), ET3(0x0030a210u, 0, 4, 1, 0),
+	ET3(0x0030a210u, 8, 4, 1, 0), ET3(0x0030a210u, 16, 4, 1, 0),
+	ET3(0x0030a210u, 24, 4, 1, 0), ET3(0x0030a124u, 3, 4, 1, 0),
+	ET3(0x0030a124u, 14, 4, 1, 0), ET3(0x0030a128u, 3, 4, 1, 0),
+	ET3(0x0030a210u, 4, 4, 1, 4), ET3(0x0030a210u, 12, 4, 1, 4),
+	ET3(0x0030a210u, 20, 4, 1, 4), ET3(0x0030a210u, 28, 4, 1, 4),
+	ET3(0x0030a124u, 7, 4, 1, 4), ET3(0x0030a124u, 18, 4, 1, 4),
+	ET3(0x0030a128u, 7, 4, 1, 4), ET3(0x00c00070u, 1, 1, 2, 0),
+	ET3(0x00c00070u, 2, 1, 2, 1), ET3(0x00c00070u, 6, 1, 2, 2),
+	ET3(0x00c00070u, 9, 1, 2, 3), ET3(0x00c00464u, 16, 3, 2, 4),
+	ET3(0x00c00464u, 8, 3, 2, 4), ET3(0x00c00464u, 0, 3, 2, 4),
+	ET3(0x00c00144u, 0, 8, 3, 0), ET3(0x00c00410u, 8, 8, 4, 0),
+	ET3(0x00c00468u, 0, 3, 5, 0), ET3(0x00c00468u, 4, 3, 5, 0),
+	ET3(0x00c00468u, 8, 3, 5, 0), ET3(0x00c00468u, 12, 3, 5, 0),
+	ET3(0x00c00468u, 16, 3, 5, 0), ET3(0x00c00468u, 20, 3, 5, 0),
+	ET3(0x00c00468u, 24, 3, 5, 0), ET3(0x00c00468u, 28, 3, 5, 0),
+	ET3(0x00c0046cu, 0, 3, 5, 3), ET3(0x00c0046cu, 4, 3, 5, 3),
+	ET3(0x00c0046cu, 8, 3, 5, 3), ET3(0x00c0046cu, 12, 3, 5, 3),
+	ET3(0x00c0046cu, 16, 3, 5, 3), ET3(0x00c0046cu, 20, 3, 5, 3),
+	ET3(0x00c0046cu, 24, 3, 5, 3), ET3(0x00c0046cu, 28, 3, 5, 3),
+	ET3(0x00c00460u, 9, 1, 6, 0), ET3(0x00c00408u, 19, 3, 6, 1),
 };
+#undef ET3
+#undef ET3_PACK
+#undef ET3_WCODE
 
 static int gx6706_uart_init(u32 clock_hz)
 {
@@ -231,11 +248,16 @@ static void gx6706_apply_efuse(void)
 			return;
 	}
 	if ((bytes[0] & 1u) && !(bytes[0] & 0x1eu)) {
-		for (i = 0; i < ARRAY_SIZE(gx6706_efuse_tweaks); i++) {
-			u32 t = gx6706_efuse_tweaks[i];
-			u32 value = bytes[ET_BYTE(t)] >> ET_SSHIFT(t);
+		for (i = 0; i < ARRAY_SIZE(gx6706_efuse_tweaks) / 3u; i++) {
+			const u8 *p = &gx6706_efuse_tweaks[i * 3u];
+			u32 t = (u32)p[0] | ((u32)p[1] << 8) | ((u32)p[2] << 16);
+			u32 wc = (t >> 15) & 7u;
+			u32 width = wc == 7u ? 3u : 1u << wc;
+			u32 addr = (t & 1u) ? DDR_BASE : SYS_BASE;
+			u32 value = bytes[(t >> 18) & 7u] >> ((t >> 21) & 7u);
 
-			set_field(ET_ADDR(t), ET_SHIFT(t), ET_WIDTH(t), value);
+			addr += ((t >> 1) & 0x1ffu) << 2;
+			set_field(addr, (t >> 10) & 0x1fu, width, value);
 		}
 		/* The vendor applies this signed trim only for valid calibration. */
 		set_field(SYS_BASE + 0x128u, 16, 4,

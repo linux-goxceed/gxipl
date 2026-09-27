@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Patch or dump the 512-byte IPL config at the end of a .boot / body image."""
+"""Patch or dump the IPL config at the end of a .boot / body image."""
 
 from __future__ import annotations
 
@@ -8,10 +8,17 @@ import struct
 import sys
 from pathlib import Path
 
-CONFIG_SIZE = 512
+CONFIG_SIZE = 64
 MAGIC = 0x47464331
 HEADER_SIZE = 0x20
 TRAILER_OFF = 0x1FF8
+CODE_END = 0x1FC0
+# Config-relative position of the BootROM trailer; see mkboot.CFG_TRAILER_OFF.
+CFG_TRAILER_OFF = TRAILER_OFF - CODE_END
+# The FINAL 4 config bytes are never written (BootROM copies 8188 bytes,
+# SRAM up to 0x00101FFB, config ends 0x00101FFF), so they must stay out of
+# the checksum -- see CFG_UNCOPIED_OFF in ipl/ipl_config.c.
+UNCOPIED_OFF = CONFIG_SIZE - 4
 LEGACY_TRAILER = bytes.fromhex("33dea189")
 
 FLAG_NAMES = {
@@ -25,12 +32,18 @@ FLAG_NAMES = {
 
 
 def crc16(data: bytes) -> int:
-    """IPL-config checksum: sum of bytes after crc, skipping BootROM trailer."""
+    """IPL-config checksum: sum of bytes after crc, skipping BootROM trailer.
+
+    The trailer's config-relative offset is CFG_TRAILER_OFF.  Mirrors
+    CFG_BOOTROM_TRAILER_OFF in ipl/ipl_config.c.
+    """
     total = 0
     for i, b in enumerate(data):
         abs_i = i  # data is config[8:]
         off = 8 + abs_i
-        if 0x1F8 <= off < 0x1FC:
+        if off >= UNCOPIED_OFF:
+            continue
+        if CFG_TRAILER_OFF <= off < CFG_TRAILER_OFF + 4:
             continue
         total += b
     return total & 0xFFFF

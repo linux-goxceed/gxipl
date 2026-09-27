@@ -29,6 +29,42 @@ u32  payload size
 u8   payload[size]
 ```
 
+## USB stage-1.5 boot
+
+The stage-1 IPL is a fixed 8 KiB window and cannot hold a full bootcode
+alongside DDR/PLL init, so USB boot is GRUB-shaped: stage 1 mounts a FAT
+stick itself and streams the *same* `GXBC` bootcode it would otherwise read
+from flash, then jumps to it. Both paths converge on an identical stage 2.
+
+Build the image with `make SOC=gx6702 stage15` → `BOOT6702.BIN` for GX6702,
+or `make SOC=gx6706 stage15` → `BOOT6706.BIN` for GX6706. The 16-byte header is
+`{magic, size, entry, checksum}` and the checksum is a plain 32-bit sum over
+the **payload only** — the same rule as `splice_boot.py` and
+`try_spi_bootcode()`. The USB and flash forms are byte-identical.
+
+To use it:
+
+1. Build the matching image with `make SOC=gx6702 stage15` or
+   `make SOC=gx6706 stage15`.
+2. Format the stick FAT16 or FAT32. `pf_mount()` checks an MBR partition and
+   also accepts a super-floppy volume at LBA 0.
+3. Copy the matching `BOOT6702.BIN` or `BOOT6706.BIN` to the root. The name is
+   fixed by the IPL probe list and must be valid 8.3: Petit FatFs has no
+   long-filename support. Lowercase spelling such as `boot6702.bin` or
+   `boot6706.bin` works too; FAT short-name bytes are uppercase even when a
+   host displays the file in lowercase, and the IPL probes those uppercase
+   short names.
+
+A GX6702 RAM-uploaded test with a 2 GB FAT16 drive initially printed
+`E15=3` then `RUNGET`. `E15=3` is `S15_NO_FILE`: `pf_mount()` succeeded, but
+the IPL could not open `/BOOT6702.BIN`. Copying the matching stage-1.5 file
+fixed the test; the same drive then reached USB boot and the ELF handoff.
+
+Boot order is SPI flash first, so a flash-resident bootcode always wins and
+the stick is only consulted when flash has nothing valid. The GX6706 default is the UART-recoverable `stick` profile. Select
+`IPL_TRANSPORT=usb` explicitly for the flash-safe SPI + USB IPL; the UART
+download path remains in the bootcode.
+
 ## Recovered initialization boundary
 
 The legacy entry sequence called three logical phases:
@@ -75,10 +111,12 @@ the readable source and verified by `tests/`:
 - The `SOC=universal` build keeps the uncompressed arrays because it shares
   `ddr_regs_0` between the Gemini and Cygnus paths.
 
-With `LTO=1` (default) and `IPL_MIN=1` (default) the stage-1 body is 3690 bytes
-on GX6702 and 4378 bytes on GX6706, inside the 7680-byte window enforced by
-`ld/linker-8k.ld`. `IPL_MIN=0` restores the GXUB bundle receive path and the
-legacy bring-up-uploader checksum fallback (3914 / 4610 bytes).
+With `LTO=1` and `IPL_MIN=1`, GX6702's default `both` image is 7786 B.
+GX6706 measures 7478 B for the `stick` bring-up default and 8118 B for the
+flash-safe SPI+USB `usb` variant with FAT16 and FAT32 support. It has 10 B
+free inside the 8128-byte window enforced by `ld/linker-8k.ld`.
+`IPL_MIN=0` restores the GXUB bundle receive path and the legacy bring-up-
+uploader checksum fallback.
 
 The CK610 coprocessor/MMU sequence in `start.S` is intentionally kept in
 assembly. It matches the working mapping exactly: IPL SRAM remains executable,
@@ -388,3 +426,260 @@ can use 64 KiB. Generated images in this tree default to 128 KiB for
 TABLE immediately after BOOT). TABLE multi-byte partition fields remain
 big-endian; its per-BOOT CRC and TABLE CRC use the existing reflected/zlib
 CRC-32 convention, not the BootROM trailer algorithm.
+
+## Quirks
+
+### Stray `19` before `RUNGET` (not ours — closed)
+
+The stock vendor IPL prefixes its `RUNGET` marker with two bytes, `0x31 0x39`:
+
+```
+19RUkgd:3\r\nNGET          # stock loader, libre_gxdl.py -v (GX6706)
+```
+
+The vendor log is decisive: the bytes come out of the vendor IPL itself, so
+they are not produced by any code in this tree. They are almost certainly
+BootROM or early-IPL-internal chatter, and they are harmless — the stock
+loader reaches the `boot>` prompt normally.
+
+Do not reproduce this on GX6702: the quirk is **not** seen there. The open IPL
+on GX6702 runs clean through `E15GO` and on to the stage-1.5 USB loader.
+
+The BootROM dumps are consistent with a GX6706/GX6702 difference but do not
+settle it. `gx6702_bootrom_16k.dis` contains 5 × `movi rN, 19` and 12 ×
+`jsri 0x19B0`, where `0x19B0` disassembles to `zextb r3, r3` — the signature of
+a put-one-character helper called against UART base `0x302000`, which is *not*
+the IPL's `UART_PHYS` (`0x402000`). `gx6706_bootrom_16k.dis` contains neither
+pattern, yet GX6706 is where the bytes are actually observed, so the constant
+count in these dumps is not a reliable predictor. Note also that the value is
+a character code (`0x13`, XOFF), not the ASCII digits `1` and `9`; how it
+renders depends on the terminal. Closed — do not spend further time on it.
+
+### Upload tooling discarded pre-`RUNGET` output
+
+`gxupload_smoke.py` used to treat the bytes arriving before `RUNGET` as
+scratch: `wait_for_get()` matched `GET` in the buffer and then called
+`termios.tcflush(..., TCIFLUSH)`, discarding everything the target had sent
+up to that point, and `wait_for_run_get()` printed only `buf[:64]` on timeout.
+Since a verbose IPL's entire startup output lives in that window and nowhere
+else, a healthy boot and a hung one looked identical from the host.
+
+Both functions now render the captured buffer (escaped, so a stream starting
+mid-frame stays readable) *before* anything can drop it, via `_show_early()`.
+`--handshake-timeout` was added for the same class of problem: the 30 s
+handshake window was hardcoded, which cut off a manual power-cycle.
+
+`libre_gxdl.py` already had the right behaviour — it logs each received byte,
+which is how the vendor `19RUkgd:3` prefix became visible.
+
+### Resolved: GX6706 stage-1 now reaches `RUNGET`
+
+**Status: size-reduced image passed RAM-uploaded FAT16 and FAT32 USB tests.**
+
+GX6706 previously emitted two bytes (`0x31 0x39`) and stopped, never reaching
+`RUNGET`. The size-reduced image passed USB loading and the ELF handoff with
+stage-1 uploaded to RAM, first using a 16 GB FAT32 drive:
+
+```
+19
+E15GO
+NationalChip GoXceed Bootcode
+version: 1.0.0-open-536215a (GX6706)
+chip name: 6706S5-NNNBE
+Attempting to boot from USB...
+USBFILE start.elf
+Reading: config.txt, 26
+Reading: start.elf, 4712 (bytes)
+Jumping to 0x91000000...
+GX6706 USB ELF hello
+```
+
+With the 2 GB FAT16 drive, the GX6706 image reported the preferred filename
+probe and then loaded its fallback:
+
+```text
+Attempting to boot from USB...
+USBFILE start6706.elf
+Reading: config.txt, 0
+USBFILE fallback start.elf
+Reading: start.elf, 4712 (bytes)
+Jumping to 0x91000000...
+GX6706 USB ELF hello
+```
+
+The `19` on the first line is the harmless vendor prefix documented above, not
+a fault. The GX6706 runs above confirm FAT16 and FAT32 loading. GX6702 also
+passed on the 2 GB FAT16 drive after `BOOT6702.BIN` was added; it loaded the
+`start.elf` fallback and handed off successfully. Both SoCs have passed
+RAM-uploaded USB stage-1.5 tests. SPI coverage is limited to JEDEC ID; SPI BOOT
+loading and flash-resident SPI-first priority remain unverified.
+
+What the earlier failure was *not*, established by testing on this hardware:
+
+- Not the board, NOR flash, USB PHY or DDR. The stock vendor IPL boots the
+  same GX6706 end to end (partition table, `GxLoader`, kernel, userspace).
+- Not a stale image. `gxupload_smoke.py` loads the IPL into RAM only and
+  writes nothing to SPI, so the running image is always the one just built.
+- Not a baud mismatch. `gx6706_uart_init()` reprograms to 29.4912 MHz with
+  divisor 16, which is exactly 115200, so the 24 MHz to 29.4912 MHz
+  transition holds the host's line rate.
+
+What actually mattered was the `cygnus_*` route/field tables in
+`ipl/usb/usb_msc_min.c`, which program the USB PLL and PHY pin routing. They
+are now packed (see below) and the packing is proven lossless.
+
+### Packed cygnus route/field tables
+
+The unpacked tables originally cost 420 B of `.rodata` (12 B per route row,
+24 B per field row), which contributed to the gx6706 `usb` size overrun before
+the transport and filesystem reductions. Nearly all of it was redundant:
+
+- `first` is the high bit of `clear` in 9 of 10 field rows.
+- `second` is `first >> 1` in 8 of 10.
+- `gate_mask` is a single bit in every route row and 7 of 10 field rows, so
+  a one-byte shift index replaces a four-byte mask.
+- `target` (1..3) and `gate` (1..2) pack into one byte.
+
+The exceptions live in two small side tables selected by flag bits, and
+`first` is stored as a shift index in the row's existing alignment padding
+(free, and it removes a shift loop that cost more than it saved).
+
+**Verify any change to these tables with `tests/replay_cygnus_tables.py`**
+(`python3 tests/replay_cygnus_tables.py`, or via pytest). It parses the real C
+source, replays both the reference and packed tables through a model of
+`cygnus_usb_clocks()`, and diffs all 50 register writes.
+
+A plain table roundtrip is **not** sufficient, and this is not hypothetical:
+an earlier encoding used `0` as the "no gate_mask" sentinel, which collides
+with a real shift index of `0` and silently dropped a gate write for
+`gate_mask == 1`. The table roundtripped "successfully" in isolation; only
+the register-write diff exposed it. In USB PHY pin configuration a silently
+dropped write is an intermittent hardware bug rather than a clean failure, so
+keep the diff-based test.
+
+## Size budget
+
+Stage-1 is capped at 8128 B (`ld/linker-8k.ld` asserts `__image_end <=
+0x00101fc0`). Note that the real gate is the stricter check in
+`utils/mkboot.py`; to measure an overshoot, relax the linker assert
+temporarily and read mkboot's error.
+
+| gx6706 variant | bytes | vs 8128 |
+| --- | ---: | ---: |
+| `usb-only` | 7010 | −1118 |
+| `stick` (default) | 7478 | −650 |
+| `usb` (SPI+USB, FAT16 + FAT32) | 8118 | −10 |
+| `both` | does not link | over |
+
+`usb` is the flash-safe production shape: SPI bootcode has priority, and the
+USB stick is the fallback when flash has no valid bootcode. FAT16 and FAT32
+remain enabled across transport profiles. The compact 24-bit eFuse descriptors
+save 20 B net while preserving all per-unit calibration writes.
+
+#### 108 B of dead literal pool in `ipl_post_mmu` — real, but unreachable
+
+`ipl_post_mmu` spans `0x1012a0`–`0x101bfa` (2394 B, 1106 instructions). Its
+literal pool holds 110 entries (440 B) but only **95 `lrw` instructions**
+reference them, so **27 slots — 108 B, half the overflow — are never read**.
+This is not a misparse: grepping the entire disassembly for each slot
+address returns zero hits.
+
+The cause is that GCC emits **four separate literal pools** inside the one
+function (53 / 37 / 12 / 8 entries), with 11 values duplicated across them.
+They map to source regions as: inlined `gx6706_spi_io_init` + EHCI, then the
+inlined stage-1.5 FAT loader (`dir_rewind`, `disk_readp`, `get_fat`,
+`clust2sect`, `pf_read`, `s15_report`), then the UART load tail.
+
+The following measurements are from the original FAT16+FAT32 `usb` build,
+before the image was brought under the limit. Two attacks were
+**byte-identical no-ops**:
+
+| attempt | result |
+| --- | --- |
+| `-fno-reorder-blocks-and-partition` | 8338 (no change) |
+| `-fno-reorder-blocks` | 8378 |
+| `-fno-crossjumping` | 8398 |
+| `-fno-thread-jumps` | 8402 |
+| `-fno-toplevel-reorder` | 10464 |
+| unwrap the `STAGE15_NAME_COUNT` loop in source | byte-identical |
+
+The last one is the informative one: `STAGE15_NAME_COUNT` is 1, so the loop
+looked like dead weight, but GCC had already collapsed it and the cluster
+sizes stayed `[53, 37, 12, 8]`. The waste is a codegen artifact that neither
+source shape nor compiler flags reach. Disabling LTO would cost far more
+than it recovers. Recorded so this is not re-attempted.
+
+#### Why `ipl_pre_mmu` did not yield anything either
+
+`ipl_pre_mmu` is 964 B / 429 instructions, of which 236 B (24%) is literal
+pool. That looks like the obvious remaining target, and 10 of the 16
+`SYS_BASE` addresses in the pool sit in word-strided runs (`0x120..0x12c`,
+`0x170..0x178`, `0x210..0x218`) that ought to collapse into `base + i * 4`
+loops.
+
+Converting the seven zero-writes in `gx6706_ddr_crg_init` into two such loops
+was implemented and measured. The result was a **byte-identical
+disassembly and exactly 0 B change**. The reason is visible in the pool
+itself: the 16 `SYS_BASE` addresses are already pooled once each and loaded
+18 times in total. GCC/LTO has already done the common-subexpression
+elimination, so there is no duplicated literal to remove.
+
+The general rule this establishes for this codebase: rewriting literal
+addresses as arithmetic loops only pays when the literals are *not* already
+deduplicated. Check the `objdump` pool composition and diff the disassembly
+before spending time on it. An identical disassembly is a definitive no-op.
+
+
+#### Why `gx6706_ddr_fields` is not a size win
+
+`gx6706_ddr_fields[]` looks like an obvious table to shrink: of its 52 packed
+rows, the 32 width-4 rows hold only 16 distinct values walked twice, and all 16
+width-16 rows are the value `0xffff` with the offset step cycling `[2,1,1]` and
+the shift step cycling `[0,8,16]`. All 52 patches are also bit-disjoint, so
+apply order is provably irrelevant. `tests/replay_ddr_fields.py` encodes those
+closed forms and checks them row-for-row against the literal table.
+
+In the original FAT16+FAT32 `usb` build, regenerating the table procedurally
+at init was implemented and measured, and it **lost 104 B** (8338 → 8442). The cause is arithmetic, not encoding: the
+index formulas need division by 3, and CK610 has no cheap constant-division
+sequence, so seven division instructions cost more than the 208 B they would
+replace. A second, division-free shift-increment form was worse still
+(8466), as was a single-loop width-4-only variant. All were reverted.
+
+The earlier cygnus win (−104 B) succeeded because it walked a *literal* table
+in a loop. Arithmetic regeneration of a table is a different technique and it
+does not pay on this target. Redundancy in a table is not automatically a
+size win — measure the loop against the table it replaces.
+
+Do not remove `efuse` to save space: it applies per-unit DDR PHY calibration
+trims and supplies DDR geometry. Dropping it risks marginal, intermittent
+DDR timing.
+
+### Warning: a `stick` gx6706 image is not flash-safe
+
+The gx6706 default transport remains `stick` (USB → UART, no SPI) for
+bring-up, although the flash-safe `usb` variant now fits. The default still
+has a consequence which is easy to miss and expensive to discover on a unit:
+
+> A `stick` (or `usb-only`) image has **no SPI driver linked at all**. If one
+> is written into SPI flash, the board can never read a bootcode from that
+> flash. With no stick and no UART host attached, there is nothing left to
+> boot from, and the symptom is a unit that appears dead rather than a loader
+> that is obviously misconfigured.
+
+The UART receiver is the only recovery path in such a `stick` image, so it is
+only appropriate for bring-up where a UART host is available to re-flash. For
+a unit that must boot unattended, select the `usb` (SPI + USB) variant.
+
+`make` now emits a warning when a non-SPI transport is chosen **explicitly on
+the command line** (the gx6706 default itself is silent, since warning on
+every ordinary build would be noise). `IPL_ALLOW_NO_SPI=1` silences it for
+deliberate bring-up images.
+
+Note that gx6702's `both` default *is* flash-safe and is hardware-verified, so
+this caveat applies to gx6706 only.
+
+`BUILD_DIR` includes both `USB_DEBUG` and `IPL_TRANSPORT`, and the link is
+forced to relink when the transport changes. Two variant selectors once
+omitted from the object path, so a build silently reused the previous
+variant's objects and image.

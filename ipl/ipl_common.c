@@ -6,8 +6,13 @@
 #include "bootcode_hdr.h"
 #include "ipl_config_api.h"
 #include "ipl_internal.h"
-#ifndef SOC_UNIVERSAL
+#if defined(SOC_GX6702) || defined(SOC_GX6706)
 #include "gx_spi.h"
+#endif
+/* Declared only when the stage-1.5 sources are actually linked in; see
+ * IPL_TRANSPORT in the Makefile. */
+#ifndef IPL_STAGE15_USB_DISABLED
+int try_usb_stage15(void);
 #endif
 
 void delay(u32 outer)
@@ -179,7 +184,7 @@ void ipl_print_gxid(u32 uart)
 	uart_puts_at(uart, "\r\n");
 }
 #endif
-static void cache_writeback_invalidate_all(void)
+void cache_writeback_invalidate_all(void)
 {
 	u32 op = BIT(0) | BIT(1) | BIT(4) | BIT(5);
 
@@ -252,7 +257,9 @@ static int uart_recv_image(u8 *destination, u32 max_size, u32 *out_size)
 	return 0;
 }
 
-static void jump_to(u32 entry)
+/* Non-static: the USB stage-1.5 loader needs the same cache-flush + branch
+ * sequence when it hands control to the image it just streamed. */
+void jump_to(u32 entry)
 {
 	cache_writeback_invalidate_all();
 	((void (*)(void))entry)();
@@ -261,6 +268,7 @@ static void jump_to(u32 entry)
 }
 
 #ifndef SOC_UNIVERSAL
+#ifndef IPL_NO_SPI
 static int try_spi_bootcode(u32 cfg_off)
 {
 	struct bootcode_hdr hdr;
@@ -285,6 +293,7 @@ static int try_spi_bootcode(u32 cfg_off)
 	jump_to(hdr.entry ? hdr.entry : BOOTCODE_ENTRY);
 	return 0;
 }
+#endif /* IPL_NO_SPI */
 #endif
 
 static void run_uart_payload(u8 *buf, u32 size)
@@ -368,17 +377,40 @@ void ipl_post_mmu(void)
 		flags = cfg->flags;
 		bootcode_off = cfg->bootcode_flash_off;
 	}
+#ifndef IPL_NO_UART
 	if (flags & IPL_CFG_UART_DIRECT)
 		goto uart_load;
+#endif
 #ifndef SOC_UNIVERSAL
+#ifndef IPL_NO_SPI
 	if (!(flags & IPL_CFG_SKIP_SPI) && try_spi_bootcode(bootcode_off) == 0)
 		return;
 #endif
+	/*
+	 * USB stage-1.5: a flash-resident bootcode still wins, so this only
+	 * runs when there is none (or it was skipped).  IPL_CFG_SKIP_USB is
+	 * honoured; the error strings are distinct from the SPI path so a
+	 * USB-stage failure is diagnosable from the UART log.
+	 */
+#ifndef IPL_STAGE15_USB_DISABLED
+	/* One breadcrumb before the attempt.  Without it, "no E15 code" is
+	 * ambiguous between the branch being compiled out, SKIP_USB being
+	 * set, and the call not being reached at all. */
+	uart_puts_at(UART_VIRT, "\r\nE15GO\r\n");
+	if (!(flags & IPL_CFG_SKIP_USB) && try_usb_stage15() == 0)
+		return;
+#endif
+#endif
 
 uart_load:
+#ifndef IPL_NO_UART
 	if (uart_recv_image((u8 *)UBOOT_ENTRY, UBOOT_MAX_SIZE, &size)) {
 		for (;;)
 			;
 	}
 	run_uart_payload((u8 *)UBOOT_ENTRY, size);
+#else
+	for (;;)
+		;
+#endif
 }

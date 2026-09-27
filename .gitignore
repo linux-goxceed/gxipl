@@ -6,6 +6,7 @@ gx-universal-ipl.*
 build/
 *-regdump.txt
 BOOT*.bin
+BOOT*.BIN
 *.o
 *.boot
 TABLE*.bin

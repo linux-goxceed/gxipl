@@ -24,14 +24,8 @@ The GX6706 implementation includes:
 - GX6706 BootROM containers, and this tree's default 128 KiB BOOT/TABLE
   packaging for that SoC (BOOT size is an SDK/image choice, not silicon).
 
-The checked-in `../loader-test` console captures prove that the H5, S5 and X5
-vendor loaders all reach DDR-resident GxLoader on the available board, read its
-SPI flash and report 672 MHz CPU/DDR. On 2026-08-30, the open generic H5/S5
-initializer additionally passed the 64 MiB alias test and the complete
-destructive sweep on that board: `RAM SWEEP PASS size=64MiB passes=70`. Thus
-the capacity and open DDR initialization are hardware-verified on the available
-unit. SPI JEDEC and BOOT reads are also hardware-verified. USB mass-storage
-loading and repeated cold-boot testing remain hardware-validation gates.
+The leading `19` is emitted by the vendor loader too and is not a fault; see
+the Quirks section of `REVERSE_ENGINEERING.md`.
 
 ## Boot flow
 
@@ -45,12 +39,28 @@ loading and repeated cold-boot testing remain hardware-validation gates.
 
 USB accepts a static little-endian C-SKY ELF32 ABIv1 executable whose entry and
 all `PT_LOAD` ranges fit in DDR. The default is `start6702.elf` on GX6702 and
-`start6706.elf` on GX6706. `config.txt` can override it with:
+`start6706.elf` on GX6706. `config.txt` can override the file with
+`start_file=` in global scope or in conditional sections. Supported sections
+are `[all]`, the legacy `[gx]` (both SoCs), `[gx6702]`, `[gx6706]`, and
+`[0x<16-hex-digit-public-id>]` (the `0x` prefix is optional). A section applies
+to following lines. Global and `[all]` values are defaults; a matching SoC
+section overrides them regardless of position, and a matching serial section
+overrides both. Within the same specificity, the last `start_file` wins.
 
 ```ini
-[gx]
-start_file=my-loader.elf
+[gx6702]
+start_file=start6702.elf
+[gx6706]
+start_file=start6.elf
+[all]
+start_file=start.elf
+[0x0123456789abcdef]
+start_file=board-specific.elf
 ```
+
+The serial selector matches the 64-bit public ID printed in the bootcode
+banner. For example, the selector `[0x0123456789abcdef]` targets the ID
+`0123456789abcdef`.
 
 ## Build
 
@@ -75,20 +85,27 @@ make test
 
 ### Stage-1 size knobs
 
-The IPL must fit the 7680-byte code window (8 KiB body minus the 512-byte
-config at `0x1e00`), enforced by an `ASSERT` in `ld/linker-8k.ld`. Two knobs
-control how much of the optional functionality is compiled in:
+The IPL must fit the 8128-byte code window (8 KiB body minus the 64-byte
+config at `0x1fc0`), enforced by an `ASSERT` in `ld/linker-8k.ld` and, more
+strictly, by a check in `utils/mkboot.py`. Two knobs control how much of the
+optional functionality is compiled in:
 
 ```sh
-# Default: LTO on, minimal stage-1 (3690 B on GX6702, 4378 B on GX6706)
+# Default: LTO on, minimal stage-1 (7786 B on GX6702, 7478 B on GX6706)
 make SOC=gx6702 ipl
 
 # Full feature set: adds the GXUB bundle receive path and the legacy
-# bring-up-uploader checksum fallback (3914 B / 4610 B)
+# bring-up-uploader checksum fallback
 make SOC=gx6702 IPL_MIN=0 ipl
 
 # Disable link-time optimization (larger, easier to correlate with .dis)
 make SOC=gx6702 LTO=0 ipl
+
+# Flash-safe GX6706 SPI + USB IPL (FAT16/FAT32, 8118 B)
+make SOC=gx6706 IPL_TRANSPORT=usb ipl
+
+# UART-recoverable USB bring-up image, without SPI
+make SOC=gx6706 IPL_TRANSPORT=stick ipl
 ```
 
 `IPL_MIN=1` (the default) drops only two things from the UART loader: the
@@ -196,15 +213,23 @@ then identified by the `NationalChip GoXceed Bootcode` banner with `(GX6706)`.
 With no usable USB or SPI payload, the bootcode should reach `waiting for
 download`; stop the stream with Ctrl-C and hardware-reset.
 
-Continue validation in this order:
+The size-reduced GX6706 image passed RAM-uploaded USB loading and ELF handoff
+with a 16 GB FAT32 drive and a 2 GB FAT16 drive. GX6702 also completed the
+handoff from the 2 GB FAT16 drive once `BOOT6702.BIN` was present; both FAT16
+runs exercised the `start.elf` filename fallback. The required
+`BOOT6702.BIN` / `BOOT6706.BIN` 8.3 short name can also be written in
+lowercase on the host; FAT stores the short-name bytes in uppercase. SPI
+coverage remains limited to a JEDEC read; TABLE discovery and a stage-2
+`GXBC` read have not been verified.
+
+Remaining validation:
 
 1. stable banner/UART and the MMU transition;
 2. UART-loading and execution of a small DDR-resident payload;
 3. SPI JEDEC/read behavior, TABLE discovery at `0x20000`, and a stage-2 `GXBC`
    read from `0x4000`; on failure, save the aligned 32-bit register dump between
    `SPI REGDUMP BEGIN` and `SPI REGDUMP END`;
-4. FAT32 USB loading of `start6706.elf`;
-5. missing/corrupt USB and SPI payloads falling through to UART.
+4. missing/corrupt USB and SPI payloads falling through to UART.
 
 Typical verbose bootcode output starts with `GX6706`, then:
 

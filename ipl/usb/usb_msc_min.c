@@ -4,13 +4,54 @@
  */
 
 #include "gx_hw.h"
+#include "ipl_internal.h"
 #include "print.h"
 #include "usb_debug.h"
-#include "ipl_config.h"
+#include "usb_msc_min.h"   /* USB_MSC_MIN_MAX_SECTORS */
 
-extern int g_verbose;
-extern int stage_from_usb;
-extern struct ipl_config g_ipl_cfg;
+/* --- IPL shims for the bootcode-only helpers this core uses --- */
+/*
+ * The core below is the bootcode USB code, which tests the bootcode's
+ * `g_verbose` flag.  The IPL has no such flag: its equivalent is
+ * `ipl_quiet`, set once from the IPL config by ipl_pre_mmu() before any USB
+ * call.
+ *
+ * SENSE TRAP: `ipl_quiet` is misnamed -- it is assigned
+ * ipl_config_verbose_early(), which returns 1 when the config's VERBOSE bit
+ * is SET, and ipl_crumb() prints when `!ipl_quiet`.  So it actually holds
+ * "verbose" (1 = verbose).  Do not invert it here: inverting compiles
+ * cleanly, still links usb_debug_regs, and then suppresses every trace at
+ * runtime -- which looks exactly like a dead USB port on the console.
+ *
+ * Do NOT declare `int g_verbose;` here.  A plain zero-initialized definition
+ * lets GCC prove every `if (g_verbose)` block statically false and delete all
+ * the diagnostics -- the image then builds clean, is the same size, and
+ * silently contains none of the traces.  Alias the real IPL flag instead so
+ * the dumps are both live and correctly gated on the config's VERBOSE bit.
+ */
+#define g_verbose	(ipl_quiet)
+
+void bc_puts(const char *t) { uart_puts_at(UART_VIRT, t); }
+void bc_putc(char c) { uart_puts_at(UART_VIRT, (const char[]){ c, 0 }); }
+void bc_put_hex(u32 v)
+{
+        static const char h[] = "0123456789abcdef";
+        char o[9];
+        int i;
+
+        for (i = 7; i >= 0; i--) { o[i] = h[v & 0xfu]; v >>= 4; }
+        o[8] = 0;
+        uart_puts_at(UART_VIRT, o);
+}
+void bc_put_dec(u32 v)
+{
+        char o[12];
+        int n = 0;
+
+        if (!v) { uart_puts_at(UART_VIRT, "0"); return; }
+        while (v) { o[n++] = (char)('0' + v % 10u); v /= 10u; }
+        while (n) uart_puts_at(UART_VIRT, (const char[]){ o[--n], 0 });
+}
 
 /* EHCI capability / operational registers (standard layout). */
 #define EHCI_CAPLENGTH		0x00
@@ -71,55 +112,91 @@ static void gx_clrset(u32 addr, u32 clear, u32 set)
 }
 
 #if defined(SOC_GX6706)
-struct cygnus_route {
-	u8 index;
-	u8 gate;
-	u32 value;
-	u32 gate_mask;
-};
+/*
+ * Packed route/field rows.
+ *
+ * The unpacked form cost 12 B and 24 B per row (420 B together), which does
+ * not fit the gx6706 `usb` (SPI+USB) variant inside the 8128 B stage-1
+ * window.  Nearly all of that is redundancy:
+ *
+ *   - `first`  is the highest set bit of `clear` in 9 of 10 field rows.
+ *   - `second` is `first >> 1`              in 8 of 10 field rows.
+ *   - `gate_mask` is a single bit in every route row and 7 of 10 field rows,
+ *     so a one-byte shift index replaces a four-byte mask.
+ *   - `target` (1..3) and `gate` (1..2) pack into one byte.
+ *
+ * The two exceptions live in the side tables, selected by `flags`.
+ *
+ * Verified lossless by tests/replay_cygnus_tables.py, which replays the old
+ * and new tables through a model of cygnus_usb_clocks() and diffs every
+ * register write.  A plain table roundtrip is NOT sufficient: an earlier
+ * version used 0 as the "no gate_mask" sentinel, which collides with a real
+ * shift index of 0 and silently dropped a gate write for gate_mask == 1.
+ * Hence CYGNUS_NO_GATE (0xff), not 0.
+ */
+#define CYGNUS_NO_GATE		0xffu	/* gshift sentinel: gate_mask was zero */
+#define CYGNUS_F_OVR_FIRST	BIT(0)
+#define CYGNUS_F_OVR_SECOND	BIT(1)
 
-struct cygnus_field {
-	u8 target;
-	u8 gate;
+struct cygnus_row {
+	u8 tg;		/* (target << 4) | gate */
+	u8 gshift;	/* gate_mask bit index, or CYGNUS_NO_GATE */
+	u8 flags;
+	u8 fshift;	/* bit index of `first`, or CYGNUS_NO_GATE when first==0.
+			 * Occupies what would otherwise be alignment padding, so
+			 * it is free.  Storing a shift rather than deriving the
+			 * high bit with a loop saved ~230 B of .text: on this
+			 * target a shift loop is not cheap. */
 	u32 clear;
-	u32 first;
-	u32 second;
 	u32 value;
-	u32 gate_mask;
 };
 
-static const struct cygnus_route cygnus_usb_routes[] = {
-	{ 1, 1, 0x05555555u, 0x00000001u },
-	{ 2, 1, 0x05555555u, 0x00000002u },
-	{ 3, 1, 0x15555555u, 0x00000200u },
-	{ 4, 1, 0x0cccccccu, 0x00000400u },
-	{ 5, 1, 0x0cccccccu, 0x00000800u },
-	{ 6, 1, 0x10000000u, 0x00001000u },
-	{ 7, 1, 0x0cccccccu, 0x00002000u },
+static const struct cygnus_route {
+	u8 index;		/* 1..18: selects the 0xa0600ffc + index*4 register */
+	u8 gate;		/* 1 or 2 */
+	u8 gshift;	/* gate_mask bit index, or CYGNUS_NO_GATE */
+	u32 value;
+} cygnus_usb_routes[] = {
+	{  1, 1,  0, 0x05555555u },
+	{  2, 1,  1, 0x05555555u },
+	{  3, 1,  9, 0x15555555u },
+	{  4, 1, 10, 0x0cccccccu },
+	{  5, 1, 11, 0x0cccccccu },
+	{  6, 1, 12, 0x10000000u },
+	{  7, 1, 13, 0x0cccccccu },
 	/* Was 0x09245fd9; the working GxLoader stage-2 carries the plain
 	 * 1/7-stride 0x09249249 here (verified against the cygnus-6706S5
 	 * loader table).  The wrong bits left a route mis-muxed. */
-	{ 8, 1, 0x09249249u, 0x00004000u },
-	{ 9, 1, 0x05d1745du, 0x00008000u },
-	{ 12, 2, 0x0cccccccu, 0x00000200u },
-	{ 13, 2, 0x0aaaaaaau, 0x00080000u },
-	{ 14, 2, 0x08000000u, 0x00000008u },
-	{ 16, 2, 0x10000000u, 0x00000001u },
-	{ 17, 2, 0x0cccccccu, 0x00000800u },
-	{ 18, 2, 0x10000000u, 0x00000400u },
+	{  8, 1, 14, 0x09249249u },
+	{  9, 1, 15, 0x05d1745du },
+	{ 12, 2,  9, 0x0cccccccu },
+	{ 13, 2, 19, 0x0aaaaaaau },
+	{ 14, 2,  3, 0x08000000u },
+	{ 16, 2,  0, 0x10000000u },
+	{ 17, 2, 11, 0x0cccccccu },
+	{ 18, 2, 10, 0x10000000u },
 };
 
-static const struct cygnus_field cygnus_usb_fields[] = {
-	{ 1, 2, 0xff800000u, 0x80000000u, 0x40000000u, 0x0a800000u, 0 },
-	{ 1, 1, 0x000ff000u, 0x00080000u, 0x00040000u, 0x0002b000u, BIT(4) },
-	{ 1, 1, 0x000000ffu, 0x00000080u, 0x00000040u, 0x00000007u, BIT(3) },
-	{ 2, 1, 0xff000000u, 0x80000000u, 0x40000000u, 0x0e000000u, BIT(19) },
-	{ 2, 1, 0x00ff0000u, 0x00800000u, 0x00400000u, 0x00050000u, BIT(21) },
-	{ 2, 1, 0x0000ff00u, 0x00008000u, 0x00004000u, 0x00000900u, BIT(22) },
-	{ 3, 1, 0xff000000u, 0x80000000u, 0x40000000u, 0x03000000u, BIT(27) },
-	{ 3, 2, 0x00ff0000u, 0x00800000u, 0x00400000u, 0x002b0000u, BIT(29) },
-	{ 3, 1, 0x00000078u, 0x00000040u, 0x00000040u, 0x00000038u, 0 },
-	{ 3, 1, 0x00000007u, 0, 0, 0x00000007u, 0 },
+/* Rows whose first/second do not follow the derive rule. */
+static const u32 cygnus_first_ovr[1] = { 0x00000000u };
+static const u32 cygnus_second_ovr[2] = { 0x00000040u, 0x00000000u };
+
+static const struct cygnus_row cygnus_usb_fields[] = {
+	{ (1 << 4) | 2, CYGNUS_NO_GATE, 0, 31, 0xff800000u, 0x0a800000u },
+	{ (1 << 4) | 1,  4, 0, 19, 0x000ff000u, 0x0002b000u },
+	{ (1 << 4) | 1,  3, 0,  7, 0x000000ffu, 0x00000007u },
+	{ (2 << 4) | 1, 19, 0, 31, 0xff000000u, 0x0e000000u },
+	{ (2 << 4) | 1, 21, 0, 23, 0x00ff0000u, 0x00050000u },
+	{ (2 << 4) | 1, 22, 0, 15, 0x0000ff00u, 0x00000900u },
+	{ (3 << 4) | 1, 27, 0, 31, 0xff000000u, 0x03000000u },
+	{ (3 << 4) | 2, 29, 0, 23, 0x00ff0000u, 0x002b0000u },
+	/* first == second == 0x40, so second is not first >> 1. */
+	{ (3 << 4) | 1, CYGNUS_NO_GATE, CYGNUS_F_OVR_SECOND, 6,
+	  0x00000078u, 0x00000038u },
+	/* first == 0, so it is not the high bit of clear. */
+	{ (3 << 4) | 1, CYGNUS_NO_GATE,
+	  CYGNUS_F_OVR_FIRST | CYGNUS_F_OVR_SECOND, CYGNUS_NO_GATE,
+	  0x00000007u, 0x00000007u },
 };
 
 static u32 cygnus_target(u8 target)
@@ -136,6 +213,16 @@ static u32 cygnus_gate(u8 gate)
 	return gate == 2 ? 0xa030a174u : 0xa030a170u;
 }
 
+/* Reconstruct a single-bit mask from a shift index; 0xff means "no bit". */
+static u32 cygnus_bit(u8 shift)
+{
+	return shift == CYGNUS_NO_GATE ? 0u : (1u << shift);
+}
+
+/*
+ * A row's gate mask is a single bit, or absent.  Decode with a branch on the
+ * sentinel: shifting by 31+ would be undefined.
+ */
 static void cygnus_usb_clocks(void)
 {
 	u32 i;
@@ -151,17 +238,23 @@ static void cygnus_usb_clocks(void)
 
 		writel(r->value | BIT(30), addr);
 		writel(r->value | BIT(30) | BIT(31), addr);
-		gx_clrset(cygnus_gate(r->gate), 0, r->gate_mask);
+		gx_clrset(cygnus_gate(r->gate), 0, cygnus_bit(r->gshift));
 	}
 	for (i = 0; i < ARRAY_SIZE(cygnus_usb_fields); i++) {
-		const struct cygnus_field *f = &cygnus_usb_fields[i];
-		u32 addr = cygnus_target(f->target);
+		const struct cygnus_row *f = &cygnus_usb_fields[i];
+		u32 addr = cygnus_target(f->tg >> 4);
+		u32 first = cygnus_bit(f->fshift);
+		u32 second = first >> 1;
 		u32 value = readl(addr);
 
-		value = (value & ~f->clear) | f->value | f->second;
+		if (f->flags & CYGNUS_F_OVR_FIRST)
+			first = cygnus_first_ovr[0];
+		if (f->flags & CYGNUS_F_OVR_SECOND)
+			second = cygnus_second_ovr[i - (ARRAY_SIZE(cygnus_usb_fields) - 2)];
+		value = (value & ~f->clear) | f->value | second;
 		writel(value, addr);
-		writel(value | f->first, addr);
-		gx_clrset(cygnus_gate(f->gate), 0, f->gate_mask);
+		writel(value | first, addr);
+		gx_clrset(cygnus_gate(f->tg & 0xfu), 0, cygnus_bit(f->gshift));
 	}
 	gx_clrset(0xa030a170u, 0,
 		  0x07000000u | BIT(30) | BIT(23) | 0x300001e0u | 0x00070000u);
@@ -400,22 +493,37 @@ static int gx_usb_pad_phy(void)
 #define QH_EPCHAR_CTRL		BIT(27)
 #define QH_EPCAP_MULT1		BIT(30)
 
-static u8 __attribute__((aligned(32))) qh_pool[QH_SIZE * 4];
-static u8 __attribute__((aligned(32))) qtd_pool[QTD_SIZE * 8];
-static u8 __attribute__((aligned(32))) ctrl_buf[512];
-static u8 __attribute__((aligned(4096))) bot_buf[512];
+/*
+ * EHCI DMA buffers MUST live in DDR, not in the IPL's own .bss.
+ *
+ * usb_dma_addr() only translates the DDR_VIRT_BASE window, so a pool left in
+ * ordinary RAM is handed to the controller with its *load* address
+ * (e.g. 0x001029a0), which the EHCI cannot reach: the schedule goes live,
+ * the qTD never completes, and the first SET_ADDRESS times out.  The bootcode
+ * never hits this because ld/linker-bootcode.ld places .bss at 0x93c00000,
+ * inside the DDR window; the IPL's ld/linker-8k.ld does not, so the pools
+ * are anchored into DDR here as pointers instead of arrays.
+ *
+ * STAGE_BUF (DDR_VIRT_BASE) is the stage-1 receive buffer, unused by the time
+ * stage-1.5 runs, so the low DDR is free.  bot_buf is placed past the qTD
+ * pool on a 4 KiB boundary: the BOT CSW read wants a naturally aligned
+ * buffer, and the whole arena stays inside one contiguous region.
+ */
+static u8 *const qh_pool  = (u8 *)DDR_VIRT_BASE;
+static u8 *const qtd_pool = (u8 *)DDR_VIRT_BASE + QH_SIZE * 2;
+static u8 *const bot_buf  = (u8 *)DDR_VIRT_BASE + 4096u;
 
 static u32 ehci_op;
-static u8 msc_addr = 1;
-static u8 msc_ep_in = 1;
-static u8 msc_ep_out = 2;
-static u8 msc_config;
-static u8 msc_interface;
+static const u8 msc_addr = 1;
+static const u8 msc_ep_in = 1;
+static const u8 msc_ep_out = 2;
+static const u8 msc_config = 1;
+static u8 msc_interface;   /* parsed no longer; unused by IPL path */
 static u32 msc_tag;
 static u8 msc_toggle_in;
 static u8 msc_toggle_out;
 static int msc_ready;
-static u16 msc_max_packet = 64;
+static const u16 msc_max_packet = 512;  /* HS bulk MPS; the stick advertises this */
 
 static u32 usb_dma_addr(const void *ptr)
 {
@@ -427,33 +535,41 @@ static u32 usb_dma_addr(const void *ptr)
 }
 
 #if USB_DEBUG
-static void usb_debug_regs(const char *stage)
+/*
+ * Register trace.
+ *
+ * Deliberately minimal: the release image is 7762 B of the 8128 B window, so
+ * the entire USB_DEBUG build has only ~366 B to spend.  The earlier form of
+ * this dumped nine registers behind nine label strings and cost ~1330 B --
+ * more than the ROM has spare, and it could not be linked at all.  A stage
+ * character plus the three registers that actually decide enumeration
+ * (PORTSC for attach/reset/enable, USBCMD for run/async, USBSTS for halt)
+ * costs a fraction of that and still localises any failure to one step.
+ *
+ * The stage argument is a character literal, not a string, so the nine call
+ * sites do not each keep a unique .rodata entry alive.
+ */
+static void usb_debug_regs(char stage)
 {
-	if (!g_verbose)
-		return;
-	bc_puts("USBDBG ");
-	bc_puts(stage);
-	bc_puts(" ehci=");
-	bc_put_hex(USB_EHCI_BASE);
-	bc_puts(" cap=");
-	bc_put_hex(readl(USB_EHCI_BASE + EHCI_HCSPARAMS));
-	bc_puts(" cmd=");
-	bc_put_hex(readl(ehci_op + EHCI_USBCMD));
-	bc_puts(" sts=");
-	bc_put_hex(readl(ehci_op + EHCI_USBSTS));
-	bc_puts(" cfg=");
-	bc_put_hex(readl(ehci_op + EHCI_CONFIGFLAG));
-	bc_puts(" port=");
-	bc_put_hex(readl(ehci_op + EHCI_PORTSC));
-	bc_puts(" pad=");
-	bc_put_hex(readl(0xa030a114u));
-	bc_puts(" mux=");
-	bc_put_hex(readl(0xa030a200u));
-	bc_puts(" vbus=");
-	bc_put_hex(readl(0xa030aa08u));
-	bc_puts("\r\n");
+        if (!g_verbose)
+                return;
+        bc_puts("U");
+        /*
+         * Write the single stage byte directly.  Do NOT use bc_puts(&stage):
+         * `stage` is one char, not a NUL-terminated string, so bc_puts walks
+         * off the end of it and prints adjacent stack bytes -- which is what
+         * made the first trace runs come out as "Ub\xff\xff...".
+         */
+        bc_putc(stage);
+        bc_put_hex(readl(ehci_op + EHCI_PORTSC));
+        bc_puts("/");
+        bc_put_hex(readl(ehci_op + EHCI_USBCMD));
+        bc_puts("/");
+        bc_put_hex(readl(ehci_op + EHCI_USBSTS));
+        bc_puts("\r\n");
 }
 
+/* `stage` is a short literal; only printed on the failure paths. */
 static int usb_error(const char *stage)
 {
 	if (g_verbose) {
@@ -507,7 +623,7 @@ static int ehci_init(void)
 
 	ehci_op = cap + caplen;
 	#if USB_DEBUG
-	usb_debug_regs("before");
+	usb_debug_regs('b');   /* before USBCMD_HCRST */
 	#endif
 
 	writel(USBCMD_HCRST, ehci_op + EHCI_USBCMD);
@@ -528,7 +644,7 @@ static int ehci_init(void)
 	}
 	ehci_async_prepare();
 	#if USB_DEBUG
-	usb_debug_regs("start");
+	usb_debug_regs('s');   /* run started, schedule queued */
 	#endif
 	return 0;
 }
@@ -546,7 +662,7 @@ static int ehci_port_reset_once(void)
 
 	v = readl(port);
 	#if USB_DEBUG
-	usb_debug_regs("power");
+	usb_debug_regs('p');   /* port powered, checking CCS */
 	#endif
 	if (!(v & PORTSC_CCS))
 		return -1;
@@ -561,21 +677,21 @@ static int ehci_port_reset_once(void)
 			break;
 	}
 	#if USB_DEBUG
-	usb_debug_regs("reset");
+	usb_debug_regs('r');   /* PR released, waiting for PED */
 	#endif
-		for (i = 0; i < 100000; i++) {
+	for (i = 0; i < 100000; i++) {
 		v = readl(port);
 		if (v & PORTSC_PED) {
 			/* USB 2.0 7.1.7.5: no device traffic for 10 ms. */
 			mdelay(10);
 			#if USB_DEBUG
-			usb_debug_regs("ready");
+			usb_debug_regs('y');   /* PED set, 10 ms settling */
 			#endif
 			return 0;
 		}
 	}
 	#if USB_DEBUG
-	usb_debug_regs("reset-timeout");
+	usb_debug_regs('t');   /* PED never came up */
 	#endif
 	return -1;
 }
@@ -603,7 +719,7 @@ static int ehci_port_reset(void)
 {
 	u32 port = ehci_op + EHCI_PORTSC;
     #if USB_DEBUG
-	usb_debug_regs("port");
+	usb_debug_regs('o');   /* entering port reset */
 	#endif
 	if (!ehci_port_reset_once())
 		return 0;
@@ -702,10 +818,15 @@ static void qtd_fill(struct qtd *td, u32 next, u8 pid, void *data, u32 len,
 	if (!len)
 		return;
 	td->buf[0] = usb_dma_addr(data);
-	for (i = 1; i < ARRAY_SIZE(td->buf); i++)
-		td->buf[i] = usb_dma_addr((void *)
-			((((u32)data + i * 0x1000u) & ~0xfffu)));
-	for (i = 0; i < ARRAY_SIZE(td->buf_hi); i++)
+	/*
+	 * Bulk qTDs are split at the fixed 512-byte max packet size; all
+	 * control requests in this IPL carry no data. A nonempty qTD can
+	 * therefore touch at most two 4 KiB pages. Leave the unused page
+	 * slots alone instead of clearing pointers the controller cannot reach.
+	 */
+	td->buf[1] = usb_dma_addr((void *)
+		(((u32)data + 0x1000u) & ~0xfffu));
+	for (i = 0; i < 2; i++)
 		td->buf_hi[i] = 0;
 }
 
@@ -858,11 +979,10 @@ static int ehci_async_xfer(u8 addr, u8 ep, u8 pid, void *data, u32 len,
 			   u8 toggle)
 {
 	struct qtd *td = (struct qtd *)qtd_pool;
-	u32 i, n;
+	u32 n;
 
-	for (i = 0; i < QTD_SIZE; i++)
-		qtd_pool[i] = 0;
-	if (len > msc_max_packet && (ep == msc_ep_in || ep == msc_ep_out)) {
+	/* All callers here are BOT bulk endpoints; control uses ctrl_req(). */
+	if (len > msc_max_packet) {
 		n = msc_fill_seg_qtds(td, pid, (u8 *)data, len, toggle);
 		if (!n)
 			return -1;
@@ -889,21 +1009,14 @@ static int ctrl_req(u8 addr, u8 bmRequestType, u8 bRequest, u16 wValue,
 		    u16 wIndex, u16 wLength, void *data)
 {
 	struct qtd *td = (struct qtd *)qtd_pool;
-	u8 setup[8];
+	u32 setup[2];
 	u32 n = 2;
 	u8 status_pid;
 
-	setup[0] = bmRequestType;
-	setup[1] = bRequest;
-	setup[2] = wValue & 0xff;
-	setup[3] = (wValue >> 8) & 0xff;
-	setup[4] = wIndex & 0xff;
-	setup[5] = (wIndex >> 8) & 0xff;
-	setup[6] = wLength & 0xff;
-	setup[7] = (wLength >> 8) & 0xff;
-
-	for (n = 0; n < QTD_SIZE * 3; n++)
-		qtd_pool[n] = 0;
+	/* Target is little-endian: USB setup fields are packed byte-for-byte. */
+	setup[0] = (u32)bmRequestType | ((u32)bRequest << 8) |
+		((u32)wValue << 16);
+	setup[1] = (u32)wIndex | ((u32)wLength << 16);
 	status_pid = (bmRequestType & 0x80) ? QTD_PID_OUT : QTD_PID_IN;
 	if (wLength) {
 		u8 pid = (bmRequestType & 0x80) ? QTD_PID_IN : QTD_PID_OUT;
@@ -934,74 +1047,6 @@ static void msc_advance_toggle(u8 *toggle, u32 len)
 		*toggle ^= 1;
 }
 
-static int msc_parse_config(void)
-{
-	u16 total;
-	u32 pos = 0;
-	int mass_storage = 0;
-
-	total = (u16)ctrl_buf[2] | ((u16)ctrl_buf[3] << 8);
-	if (total > sizeof(ctrl_buf))
-		total = sizeof(ctrl_buf);
-	while (pos + 2u <= total) {
-		u8 length = ctrl_buf[pos];
-		u8 type = ctrl_buf[pos + 1];
-
-		if (length < 2 || pos + length > total)
-			break;
-		if (type == 4 && length >= 9) {
-			msc_interface = ctrl_buf[pos + 2];
-			mass_storage = ctrl_buf[pos + 5] == 8 &&
-				ctrl_buf[pos + 6] == 6 &&
-				ctrl_buf[pos + 7] == 0x50;
-		} else if (type == 5 && length >= 7 && mass_storage) {
-			u8 endpoint = ctrl_buf[pos + 2];
-			if (ctrl_buf[pos + 3] == 2) {
-				if (endpoint & 0x80)
-					msc_ep_in = endpoint & 0x0f;
-				else
-					msc_ep_out = endpoint & 0x0f;
-				msc_max_packet = (u16)ctrl_buf[pos + 4] |
-					((u16)ctrl_buf[pos + 5] << 8);
-				msc_max_packet &= 0x07ffu;
-			}
-		}
-		pos += length;
-	}
-	if (!msc_ep_in || !msc_ep_out)
-		return -1;
-	/*
-	 * Speed clamp, currently inactive because msc_eps is fixed at HS (see
-	 * the comment on msc_eps for why PSPD is not trusted on this silicon).
-	 * Kept because it is the correct handling if a genuine FS/LS device is
-	 * ever attached: a bulk endpoint is capped at 64 bytes at full speed
-	 * and 8 at low speed, and 512 is only legal at high speed.  A too-large
-	 * MAXPKTLEN in the QH makes the host issue an over-length packet the
-	 * device babbles on, so clamping plus msc_fill_seg_qtds() splitting is
-	 * what keeps the schedule legal.
-	 */
-	if (msc_eps != QH_EPS_HS) {
-		u32 cap = (msc_eps == QH_EPS_LS) ? 8u : 64u;
-
-		if (msc_max_packet > cap)
-			msc_max_packet = (u16)cap;
-	}
-	msc_config = ctrl_buf[5];
-#if USB_DEBUG
-	if (g_verbose) {
-		bc_puts("USBMSC cfg=");
-		bc_put_dec(msc_config);
-		bc_puts(" in=");
-		bc_put_dec(msc_ep_in);
-		bc_puts(" out=");
-		bc_put_dec(msc_ep_out);
-		bc_puts(" max=");
-		bc_put_dec(msc_max_packet);
-		bc_puts("\r\n");
-	}
-#endif
-	return mass_storage ? 0 : -1;
-}
 
 static int msc_reset_transport(void)
 {
@@ -1018,30 +1063,18 @@ static int msc_reset_transport(void)
 
 static int bot_cmd(u8 *cb, u8 cblen, void *data, u32 len, int data_in)
 {
-	u8 cbw[31];
-	u8 csw[13];
+	u32 cbw_csw[12];
+	u8 *cbw = (u8 *)cbw_csw;
+	u8 *csw = (u8 *)&cbw_csw[8];
 	u32 i;
 
-	for (i = 0; i < sizeof(csw); i++)
-		csw[i] = 0;
-	for (i = 0; i < 31; i++)
-		cbw[i] = 0;
-	cbw[0] = 0x55;
-	cbw[1] = 0x53;
-	cbw[2] = 0x42;
-	cbw[3] = 0x43;
-	msc_tag++;
-	cbw[4] = msc_tag & 0xff;
-	cbw[5] = (msc_tag >> 8) & 0xff;
-	cbw[6] = (msc_tag >> 16) & 0xff;
-	cbw[7] = (msc_tag >> 24) & 0xff;
-	cbw[8] = len & 0xff;
-	cbw[9] = (len >> 8) & 0xff;
-	cbw[10] = (len >> 16) & 0xff;
-	cbw[11] = (len >> 24) & 0xff;
-	cbw[12] = data_in ? 0x80 : 0x00;
-	cbw[13] = 0;
-	cbw[14] = cblen;
+	/* CBW/CSW are little-endian wire structures; initialize by words. */
+	for (i = 4; i < 12; i++)
+		cbw_csw[i] = 0;
+	cbw_csw[0] = 0x43425355u;
+	cbw_csw[1] = ++msc_tag;
+	cbw_csw[2] = len;
+	cbw_csw[3] = (data_in ? 0x80u : 0u) | ((u32)cblen << 16);
 	for (i = 0; i < cblen && i < 16; i++)
 		cbw[15 + i] = cb[i];
 
@@ -1087,99 +1120,125 @@ static int bot_cmd(u8 *cb, u8 cblen, void *data, u32 len, int data_in)
 	return 0;
 }
 
-int usb_msc_init(void)
+/*
+ * Quiesce the controller before handing off to stage 2.
+ *
+ * The stage-1.5 bootcode runs its OWN USB driver (bootcode/usb/usb_msc.c),
+ * starting with a USBCMD_HCRST.  When stage 1 reached us over USB it left the
+ * controller running: ASE set, an async schedule live in ASYNCLISTADDR, and a
+ * port that still has PED latched and the device at the address we assigned.
+ * HCRST against that state does not reliably converge, and the bootcode then
+ * blocks waiting for a reset/port condition that never arrives.
+ *
+ * On SPI and UART handoff paths the controller has never been started, so
+ * this is a no-op there -- it only matters for the USB->stage-2 case, which is
+ * exactly where the gx6706 board hung with no output after
+ * "Attempting to boot from USB...".
+ *
+ * Order matters: drop ASE first and wait for ASS to clear (so the schedule
+ * stops touching memory), then clear the port, then HCRST and wait for it to
+ * fall out of reset.
+ */
+void usb_msc_min_quiesce(void)
 {
-	u8 cb[16];
+	static const u32 spins = 100000;
 	u32 i;
 
+	if (!ehci_op)
+		return;
+	/* 1. stop the async schedule */
+	writel(readl(ehci_op + EHCI_USBCMD) & ~USBCMD_ASE,
+	       ehci_op + EHCI_USBCMD);
+	for (i = 0; i < spins; i++)
+		if (!(readl(ehci_op + EHCI_USBSTS) & USBSTS_ASS))
+			break;
+	/* 2. drop the port enable and the bus reset */
+	writel(readl(ehci_op + EHCI_PORTSC) & ~PORTSC_PED & ~PORTSC_PR,
+	       ehci_op + EHCI_PORTSC);
+	/* 3. controller reset, bounded so a wedged controller cannot hang us */
+	writel(USBCMD_HCRST, ehci_op + EHCI_USBCMD);
+	for (i = 0; i < spins; i++)
+		if (!(readl(ehci_op + EHCI_USBCMD) & USBCMD_HCRST))
+			break;
 	msc_ready = 0;
-	msc_tag = 0;
-	msc_toggle_in = 0;
-	msc_toggle_out = 0;
-	msc_ep_in = 0;
-	msc_ep_out = 0;
-	msc_interface = 0;
-	msc_max_packet = 64;
-		/*
-	 * Skip the PHY bring-up when stage 1 already did it.
-	 *
-	 * cygnus_usb_clocks() reprograms the USB PLL and re-runs the pad/mux
-	 * route programming.  Running that while the controller and PHY are
-	 * already live -- which is exactly the state a USB handoff inherits --
-	 * wedges the PHY on gx6706 and this function never returns, so the
-	 * board dies straight after the banner.  The SPI and UART handoffs
-	 * arrive with a cold PHY and still need the full sequence.
-	 */
-	if (!stage_from_usb) {
-		if (gx_usb_pad_phy())
-			return usb_fail("PHY");
-	}
-	if (ehci_init())
-		return usb_fail("EHCI");
-	if (ehci_port_reset())
-		return usb_fail("PORT");
-	
-	/*
-	 * Deliberately NOT latching the port speed from PORTSC bits 27:26.
-	 * Measured: PSPD reads 0 (full speed) on this silicon even for a
-	 * stick that advertises a 512-byte bulk MPS (i.e. truly high speed),
-	 * and driving the control QH with EPS=FS makes the device reject the
-	 * very first SETUP with XACT_ERR.  So the QH speed field stays HS
-	 * (see msc_eps) and MAXPKTLEN is taken from the descriptor as-is.
-	 */
-
-	/* SET_ADDRESS, then USB 2.0 9.2.6.3 recovery before the next token. */
-	if (ctrl_req(0, 0x00, 0x05, msc_addr, 0, 0, 0))
-		return usb_fail("SET_ADDRESS");
-	mdelay(10);
-
-	/* GET_DESCRIPTOR device — best-effort */
-	if (ctrl_req(msc_addr, 0x80, 0x06, 0x0100, 0, 18, ctrl_buf))
-		return usb_fail("DEVICE_DESCRIPTOR");
-
-	if (ctrl_req(msc_addr, 0x80, 0x06, 0x0200, 0, sizeof(ctrl_buf), ctrl_buf))
-		return usb_fail("CONFIG_DESCRIPTOR");
-	if (msc_parse_config())
-		return usb_fail("MSC_DESCRIPTOR");
-
-	/* SET_CONFIGURATION from the discovered descriptor. */
-	if (ctrl_req(msc_addr, 0x00, 0x09, msc_config, 0, 0, 0))
-		return usb_fail("SET_CONFIGURATION");
-	if (msc_reset_transport())
-		return usb_fail("BOT_RESET");
-
-	/* SCSI TEST UNIT READY / INQUIRY soft */
-	for (i = 0; i < 16; i++)
-		cb[i] = 0;
-	cb[0] = 0x00; /* TEST UNIT READY */
-	bot_cmd(cb, 6, 0, 0, 0);
-
-	for (i = 0; i < 16; i++)
-		cb[i] = 0;
-	cb[0] = 0x12;
-	cb[4] = 36;
-	bot_cmd(cb, 6, bot_buf, 36, 1);
-
-	msc_ready = 1;
-	return 0;
 }
 
-int usb_msc_read_sector(u32 lba, u8 *buf)
+int usb_msc_min_init(void)
 {
-	u8 cb[16];
+        u32 cb[4];
+
+        msc_ready = 0;
+        msc_tag = 0;
+        msc_toggle_in = 0;
+        msc_toggle_out = 0;
+
+        if (gx_usb_pad_phy())
+                return usb_fail("PHY");
+        if (ehci_init())
+                return usb_fail("EHCI");
+        if (ehci_port_reset())
+                return usb_fail("PORT");
+
+        /*
+         * Deliberately NOT latching the port speed from PORTSC bits 27:26.
+         * Measured: PSPD reads 0 (full speed) on this silicon even for a
+         * stick that advertises a 512-byte bulk MPS (i.e. truly high speed),
+         * and driving the control QH with EPS=FS makes the device reject the
+         * very first SETUP with XACT_ERR.  So the QH speed field stays HS
+         * (see msc_eps).
+         *
+         * The MSC topology is FIXED rather than parsed from the configuration
+         * descriptor, exactly as the original cutdown core did: msc_parse_config()
+         * and its 512-byte ctrl_buf cost ~400 B of the 8 KiB window, and a
+         * boot stick is built by this tree, so the endpoints are known.
+         * SET_CONFIGURATION is still issued, with msc_config == 1.
+         */
+
+        /* SET_ADDRESS, then USB 2.0 9.2.6.3 recovery before the next token. */
+        if (ctrl_req(0, 0x00, 0x05, msc_addr, 0, 0, 0))
+                return usb_fail("SET_ADDRESS");
+        mdelay(10);
+
+        if (ctrl_req(msc_addr, 0x00, 0x09, msc_config, 0, 0, 0))
+                return usb_fail("SET_CONFIGURATION");
+        if (msc_reset_transport())
+                return usb_fail("BOT_RESET");
+
+        /* TEST UNIT READY: six zero CDB bytes. */
+        cb[0] = 0;
+        cb[1] = 0;
+        bot_cmd((u8 *)cb, 6, 0, 0, 0);
+
+        /* INQUIRY: allocation length 36 in CDB byte 4. */
+        cb[0] = 0x12;
+        cb[1] = 36;
+        bot_cmd((u8 *)cb, 6, bot_buf, 36, 1);
+
+        msc_ready = 1;
+        return 0;
+}
+
+int usb_msc_min_read_sectors(u32 lba, u8 *buf)
+{
+	u32 cb[4];
 	u32 i;
 
 	if (!msc_ready)
 		return -1;
-	for (i = 0; i < 16; i++)
-		cb[i] = 0;
-	cb[0] = 0x28; /* READ(10) */
-	cb[2] = (lba >> 24) & 0xff;
-	cb[3] = (lba >> 16) & 0xff;
-	cb[4] = (lba >> 8) & 0xff;
-	cb[5] = lba & 0xff;
-	cb[8] = 1;
-	if (bot_cmd(cb, 10, bot_buf, 512, 1)) {
+	cb[0] = 0x28u | (((lba >> 24) & 0xffu) << 16) |
+		(((lba >> 16) & 0xffu) << 24);
+	cb[1] = ((lba >> 8) & 0xffu) | ((lba & 0xffu) << 8);
+	cb[2] = 0;
+	/*
+	 * Multi-sector READ(10).  The IPL's diskio layer declares a window of
+	 * USB_MSC_MIN_MAX_SECTORS sectors aligned to that boundary, so the
+	 * transfer must cover the whole window -- transferring only sector 0
+	 * left the rest of the window uninitialised while window_lba still
+	 * claimed the aligned base, so every read past the first sector
+	 * returned garbage and pf_open() failed with FR_NO_FILE.
+	 */
+	cb[2] = USB_MSC_MIN_MAX_SECTORS;
+	if (bot_cmd((u8 *)cb, 10, bot_buf, USB_MSC_MIN_MAX_SECTORS * 512u, 1)) {
 #if USB_DEBUG
 		if (g_verbose) {
 			bc_puts("USBERR READ10 lba=");
@@ -1189,7 +1248,7 @@ int usb_msc_read_sector(u32 lba, u8 *buf)
 #endif
 		return -1;
 	}
-	for (i = 0; i < 512; i++)
+	for (i = 0; i < USB_MSC_MIN_MAX_SECTORS * 512u; i++)
 		buf[i] = bot_buf[i];
 	return 0;
 }

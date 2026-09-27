@@ -44,6 +44,8 @@ extern int ipl_quiet;
 
 void delay(u32 outer);
 int wait_value(u32 addr, u32 mask, u32 value);
+void jump_to(u32 entry);
+void cache_writeback_invalidate_all(void);
 void set_field(u32 addr, u8 shift, u8 width, u32 value);
 void uart_puts_at(u32 base, const char *text);
 void ipl_print_gxid(u32 uart);

@@ -5,6 +5,7 @@
 #include "usb/usb_msc.h"
 #include "boot.h"
 #include "print.h"
+#include "usb_debug.h"
 
 extern int g_verbose;
 
@@ -21,6 +22,7 @@ static int read_file_to(const char *path, u8 *dst, u32 max, u32 *out_len)
 
 	fr = f_open(&fil, path, FA_READ);
 	if (fr != FR_OK) {
+#if USB_DEBUG
 		if (g_verbose) {
 			bc_puts("USBERR OPEN ");
 			bc_puts(path);
@@ -28,6 +30,7 @@ static int read_file_to(const char *path, u8 *dst, u32 max, u32 *out_len)
 			bc_put_dec((u32)fr);
 			bc_puts("\r\n");
 		}
+#endif
 		return -1;
 	}
 	while (total < max) {
@@ -47,57 +50,214 @@ static int read_file_to(const char *path, u8 *dst, u32 max, u32 *out_len)
 	return 0;
 }
 
+/* Filter start_file by specificity; equal-specificity entries use file order. */
+static int cfg_space(char c)
+{
+	return c == ' ' || c == '\t';
+}
+
+static int cfg_equal_ci(const char *a, const char *b)
+{
+	while (*a && *b) {
+		char ca = *a++;
+		char cb = *b++;
+
+		if (ca >= 'A' && ca <= 'Z')
+			ca += 'a' - 'A';
+		if (cb >= 'A' && cb <= 'Z')
+			cb += 'a' - 'A';
+		if (ca != cb)
+			return 0;
+	}
+	return *a == *b;
+}
+
+static int cfg_hex(char c)
+{
+	if (c >= '0' && c <= '9')
+		return c - '0';
+	if (c >= 'a' && c <= 'f')
+		return c - 'a' + 10;
+	if (c >= 'A' && c <= 'F')
+		return c - 'A' + 10;
+	return -1;
+}
+
+static int cfg_serial_matches(const char *s)
+{
+	u32 high = 0, low = 0;
+	u32 id_low = readl(GX_PUBLIC_ID_VIRT);
+	u32 id_high = readl(GX_PUBLIC_ID_VIRT + 4u);
+	u32 i;
+
+	if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X'))
+		s += 2;
+	/* Match the full eight-byte ID printed by the bootcode banner. */
+	for (i = 0; i < 16; i++) {
+		int nibble = cfg_hex(s[i]);
+
+		if (nibble < 0)
+			return 0;
+		if (i < 8)
+			high = (high << 4) | (u32)nibble;
+		else
+			low = (low << 4) | (u32)nibble;
+	}
+	if (s[16] || (!id_low && !id_high) ||
+	    (id_low == 0xffffffffu && id_high == 0xffffffffu))
+		return 0;
+	return high == id_high && low == id_low;
+}
+
+static int cfg_section_priority(const char *section)
+{
+	if (cfg_equal_ci(section, "all") || cfg_equal_ci(section, "gx"))
+		return 0;
+
+#if defined(SOC_GX6706)
+	if (cfg_equal_ci(section, "gx6706"))
+		return 1;
+#else
+	if (cfg_equal_ci(section, "gx6702"))
+		return 1;
+#endif
+	return cfg_serial_matches(section) ? 2 : -1;
+}
+
+static void cfg_parse_line(char *line, int *active_priority, char *out,
+			   u32 out_sz, int *best_priority)
+{
+	char *p = line, *end, *eq, *value;
+	u32 n, i;
+
+	/* Strip comments, then trim surrounding spaces and tabs. */
+	for (p = line; *p; p++) {
+		if (*p == '#' || *p == ';') {
+			*p = 0;
+			break;
+		}
+	}
+	p = line;
+	while (cfg_space(*p))
+		p++;
+	end = p;
+	while (*end)
+		end++;
+	while (end > p && cfg_space(end[-1]))
+		end--;
+	*end = 0;
+	if (!*p)
+		return;
+
+	if (*p == '[') {
+		if (end[-1] != ']') {
+			*active_priority = -1;
+			return;
+		}
+		end[-1] = 0;
+		p++;
+		while (cfg_space(*p))
+			p++;
+		end = p;
+		while (*end)
+			end++;
+		while (end > p && cfg_space(end[-1]))
+			end--;
+		*end = 0;
+		*active_priority = cfg_section_priority(p);
+		return;
+	}
+
+	if (*active_priority < 0)
+		return;
+	eq = p;
+	while (*eq && *eq != '=')
+		eq++;
+	if (!*eq)
+		return;
+	*eq = 0;
+	end = p;
+	while (*end)
+		end++;
+	while (end > p && cfg_space(end[-1]))
+		end--;
+	*end = 0;
+	if (!cfg_equal_ci(p, "start_file"))
+		return;
+
+	value = eq + 1;
+	while (cfg_space(*value))
+		value++;
+	end = value;
+	while (*end)
+		end++;
+	while (end > value && cfg_space(end[-1]))
+		end--;
+	*end = 0;
+	n = (u32)(end - value);
+	if (!n || n >= out_sz || *active_priority < *best_priority)
+		return;
+	for (i = 0; i < n; i++)
+		out[i] = value[i];
+	out[n] = 0;
+	*best_priority = *active_priority;
+}
+
 static int parse_start_file(char *out, u32 out_sz)
 {
 	char line[128];
-	UINT br, i, n;
+	UINT br, n = 0;
 	FRESULT fr;
-	int in_gx = 0;
+	int active_priority = 0, best_priority = -1, overflow = 0;
 
 	fr = f_open(&fil, "config.txt", FA_READ);
 	if (fr != FR_OK)
 		return -1;
 
-	n = 0;
 	for (;;) {
 		char c;
+
 		fr = f_read(&fil, &c, 1, &br);
-		if (fr != FR_OK || br == 0)
+		if (fr != FR_OK)
 			break;
+		if (!br) {
+			if (n && !overflow) {
+				line[n] = 0;
+				cfg_parse_line(line, &active_priority, out, out_sz,
+					       &best_priority);
+			}
+			break;
+		}
 		if (c == '\r')
 			continue;
-		if (c == '\n' || n + 1 >= sizeof(line)) {
-			line[n] = 0;
-			if (line[0] == '[') {
-				in_gx = 0;
-				if (line[1] == 'g' && line[2] == 'x')
-					in_gx = 1;
-			} else if (in_gx) {
-				const char *key = "start_file=";
-				u32 k;
-				int match = 1;
+		if (c == '\n') {
+			if (!overflow) {
+				line[n] = 0;
+				cfg_parse_line(line, &active_priority, out, out_sz,
+					       &best_priority);
+			} else {
+				char *p = line;
 
-				for (k = 0; key[k]; k++) {
-					if (line[k] != key[k]) {
-						match = 0;
-						break;
-					}
-				}
-				if (match) {
-					for (i = 0; line[k] && i + 1 < out_sz; i++, k++)
-						out[i] = line[k];
-					out[i] = 0;
-					f_close(&fil);
-					return 0;
-				}
+				while (cfg_space(*p))
+					p++;
+				if (*p == '[')
+					active_priority = -1;
 			}
 			n = 0;
+			overflow = 0;
 			continue;
 		}
-		line[n++] = c;
+		if (overflow)
+			continue;
+		if (n + 1 < sizeof(line))
+			line[n++] = c;
+		else {
+			overflow = 1;
+			line[n] = 0;
+		}
 	}
 	f_close(&fil);
-	return -1;
+	return best_priority >= 0 ? 0 : -1;
 }
 
 int bc_usb_boot(void)
@@ -125,11 +285,13 @@ int bc_usb_boot(void)
 
 	fr = f_mount(&fs, "", 1);
 	if (fr != FR_OK) {
+#if USB_DEBUG
 		if (g_verbose) {
 			bc_puts("USBERR FAT mount=");
 			bc_put_dec((u32)fr);
 			bc_puts("\r\n");
 		}
+#endif
                 #ifdef VERBOSE_MINIFY
 		bc_vputs("EUSBMNT\r\nSPIBOOT\r\n");
                 #else

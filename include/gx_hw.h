@@ -102,6 +102,25 @@
 
 /* DDR-resident bootcode link/load address. */
 #define BOOTCODE_ENTRY		0x93c00000u
+
+/*
+ * Stage-1 -> stage-2 handoff slot.
+ *
+ * Deliberately NOT the IPL config blob at IPL_CONFIG_VA.  Over UART the
+ * uploader transmits only file bytes 0x20..0x201B (STAGE1_BOOTROM_SLICE =
+ * (0x20, 0x201C), 8188 bytes) while the config occupies file 0x1FE0..0x201F,
+ * so the blob is never delivered -- hardware showed magic=0 version=0 in
+ * SRAM.  Over flash the BootROM likewise stops at 0x00101FFB, leaving the
+ * last 4 config bytes unwritten.  The config address is unusable as a
+ * mailbox in either transport.
+ *
+ * This is plain DDR, clear of the bootcode image (.bss ends 0x93c059D4),
+ * and the IPL writes it immediately before the jump.
+ */
+#define STAGE_HANDOFF_VA		0x93c08000u
+
+/* Value the stage-1 IPL stores in the slot when it arrived over USB. */
+#define STAGE_HANDOFF_USB_PHY_READY	0x50485952u   /* "PHYR" */
 #define BOOTCODE_MAX_SIZE	(512u * 1024u)
 
 /* U-Boot raw entry used by the existing UART path. */

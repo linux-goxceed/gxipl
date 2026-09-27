@@ -15,7 +15,8 @@ import sys
 from pathlib import Path
 
 from mk_flash_probe64 import patch_table_for_boot
-from mkboot import LEGACY_TRAILER, TRAILER_OFF, bootrom_stage1_crc
+from mkboot import (LEGACY_TRAILER, TRAILER_OFF, bootrom_stage1_crc,
+                    CONFIG_SIZE, CODE_END, CFG_TRAILER_OFF)
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -45,11 +46,11 @@ def seal_ipl_container(container: bytes, bootcode_off: int, uboot_off: int,
     data = bytearray(container)
     if len(data) != 0x2020 or data[:4] != b"toob":
         raise SystemExit("IPL container must be exactly 8224 bytes")
-    cfg_off = 0x20 + 0x1E00
+    cfg_off = 0x20 + CODE_END
     struct.pack_into("<III", data, cfg_off + 16, bootcode_off, uboot_off, 0)
     checksum = 0
-    for index in range(8, 512):
-        if 0x1F8 <= index < 0x1FC:
+    for index in range(8, CONFIG_SIZE):
+        if CFG_TRAILER_OFF <= index < CFG_TRAILER_OFF + 4:
             continue
         checksum += data[cfg_off + index]
     struct.pack_into("<H", data, cfg_off + 6, checksum & 0xFFFF)
